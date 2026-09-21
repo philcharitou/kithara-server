@@ -1,3 +1,0 @@
-2026/09/21 14:10:48 scanned 8 books in 17ms
-2026/09/21 14:10:48 kithara-server 0.1.0 (protocol 1) serving "C:/Users/Phil/Documents/Kithara/store/demo-library" on 127.0.0.1:8080, 8 books
-2026/09/21 14:10:51 GET /api/health 200 0s
