@@ -332,3 +332,41 @@ func keys(m map[string]Book) []string {
 	}
 	return out
 }
+
+func TestIDSurvivesLostSidecar(t *testing.T) {
+	data := t.TempDir()
+	root := testLibrary(t)
+	lib := newLibrary(root, data)
+	if err := lib.rescan(); err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]string{}
+	for _, b := range lib.snapshot().Books {
+		before[b.Title] = b.ID
+	}
+	// Someone tidies away the sidecars; the path record must carry the ids.
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info.Name() == sidecarName {
+			os.Remove(p)
+		}
+		return nil
+	})
+	if err := lib.rescan(); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range lib.snapshot().Books {
+		if before[b.Title] != b.ID {
+			t.Fatalf("%q changed id after losing its sidecar: %s -> %s", b.Title, before[b.Title], b.ID)
+		}
+	}
+	// A fresh process reads the same records back.
+	again := newLibrary(root, data)
+	if err := again.rescan(); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range again.snapshot().Books {
+		if before[b.Title] != b.ID {
+			t.Fatalf("%q changed id across restart: %s -> %s", b.Title, before[b.Title], b.ID)
+		}
+	}
+}
