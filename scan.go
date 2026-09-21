@@ -430,31 +430,38 @@ func applyTags(b *Book, tags map[string]string, single bool, fallback string) {
 }
 
 // idFor keeps a book's id with the book: a sidecar file in its folder, so the id
-// survives renames and moves; a path-keyed record in the data folder when the folder
-// is read-only or the book is a lone file among others.
+// survives renames and moves, and a path-keyed record in the data folder as a second
+// copy, so a lost sidecar (a restore from backup, a tidy-up) does not turn the book
+// into a new one and orphan its listening position. A lone file among others has
+// only the path record.
 func (l *library) idFor(dir, firstFile string, loose bool) (string, error) {
-	if !loose {
-		p := filepath.Join(dir, sidecarName)
-		if data, err := os.ReadFile(p); err == nil {
-			if id := strings.TrimSpace(string(data)); id != "" {
-				return id, nil
-			}
-		}
-		id := newID()
-		if err := os.WriteFile(p, []byte(id+"\n"), 0o644); err == nil {
+	if loose {
+		rel, _ := filepath.Rel(l.root, firstFile)
+		return l.idByPath(filepath.ToSlash(rel), ""), nil
+	}
+	rel, _ := filepath.Rel(l.root, dir)
+	key := filepath.ToSlash(rel)
+	p := filepath.Join(dir, sidecarName)
+	if data, err := os.ReadFile(p); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			l.idByPath(key, id) // keep the path record in step with the sidecar
 			return id, nil
 		}
-		rel, _ := filepath.Rel(l.root, dir)
-		return l.idByPath(filepath.ToSlash(rel), id), nil
 	}
-	rel, _ := filepath.Rel(l.root, firstFile)
-	return l.idByPath(filepath.ToSlash(rel), ""), nil
+	id := l.idByPath(key, "")
+	if err := os.WriteFile(p, []byte(id+"\n"), 0o644); err != nil {
+		log.Printf("no sidecar in %s (%v); id kept by path", dir, err)
+	}
+	return id, nil
 }
 
+// idByPath returns the id recorded for a path, recording preferred (or a new id)
+// when there is none. A sidecar that disagrees with the record wins: the folder was
+// moved here from elsewhere and its id came with it.
 func (l *library) idByPath(rel, preferred string) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if id, ok := l.ids[rel]; ok {
+	if id, ok := l.ids[rel]; ok && (preferred == "" || id == preferred) {
 		return id
 	}
 	if preferred == "" {
