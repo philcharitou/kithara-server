@@ -98,7 +98,7 @@ WantedBy=multi-user.target
 ```bash
 docker run -d --name kithara \
   -v /srv/audiobooks:/library:ro -v kithara-data:/data -p 8080:8080 \
-  ghcr.io/kithara-app/kithara-server
+  ghcr.io/philcharitou/kithara-server
 docker exec -it kithara kithara-server user add phil
 ```
 
