@@ -1265,7 +1265,9 @@ player.audio.preload = "auto";
 
 function playerPosition() {
   const f = player.files[player.index];
-  return f ? f.start + Math.round(player.audio.currentTime * 1000) : 0;
+  if (!f) return 0;
+  // While another file loads, its currentTime is not the place yet: the pending seek is.
+  return f.start + Math.round((player.pendingSeek ?? player.audio.currentTime) * 1000);
 }
 
 function fileAt(ms) {
@@ -1304,7 +1306,7 @@ async function playBook(id, atMs) {
     player.index = -1;
     const p = progressOf(b);
     const from = atMs ?? (p && !p.finished ? p.positionMs : 0);
-    player.audio.playbackRate = Number(state.prefs.speed || 1);
+    setSpeed(Number(state.prefs.speed || 1));
     seekTo(from, true);
     mediaSession();
     dialog.open && dialog.close();
@@ -1317,7 +1319,7 @@ async function saveProgress({ finished = false, keepalive = false } = {}) {
   finished = finished || player.done;
   const pos = finished ? b.durationMs : playerPosition();
   const body = { positionMs: pos, updatedAt: Date.now(), finished };
-  const speed = player.audio.playbackRate;
+  const speed = player.speed || 1;
   if (speed !== 1) body.speed = speed;
   player.saveAt = Date.now();
   try {
@@ -1348,6 +1350,8 @@ function stopPlayer() {
 
 player.audio.addEventListener("loadedmetadata", () => {
   if (player.pendingSeek != null) { player.audio.currentTime = player.pendingSeek; player.pendingSeek = null; }
+  setSpeed(player.speed);
+  if (player.book) drawPlayer();
 });
 player.audio.addEventListener("ended", () => {
   if (player.index + 1 < player.files.length) {
@@ -1359,7 +1363,8 @@ player.audio.addEventListener("ended", () => {
     drawPlayer();
   }
 });
-player.audio.addEventListener("pause", () => { if (!player.audio.ended) saveProgress(); drawPlayer(); });
+// Loading the next file pauses the element for a moment; that is not the listener pausing.
+player.audio.addEventListener("pause", () => { if (player.pendingSeek != null) return; if (!player.audio.ended) saveProgress(); drawPlayer(); });
 player.audio.addEventListener("play", () => { drawPlayer(); requestAnimationFrame(playerFrame); });
 
 // playerFrame moves the timeline every frame while playing; the audio element itself
@@ -1369,7 +1374,12 @@ function playerFrame() {
   updatePlayerTime();
   requestAnimationFrame(playerFrame);
 }
-player.audio.addEventListener("error", () => { if (player.book) toast("This file could not be played in the browser"); });
+player.audio.addEventListener("error", () => {
+  if (!player.book) return;
+  player.pendingSeek = null;
+  drawPlayer();
+  toast("This file could not be played in the browser");
+});
 player.audio.addEventListener("timeupdate", () => {
   if (!player.book) return;
   const pos = playerPosition();
@@ -1383,6 +1393,14 @@ player.audio.addEventListener("timeupdate", () => {
 });
 document.addEventListener("visibilitychange", () => { if (document.hidden && player.book) saveProgress({ keepalive: true }); });
 window.addEventListener("pagehide", () => { if (player.book) saveProgress({ keepalive: true }); });
+
+// setSpeed sets the playback rate where loading another file won't undo it: load()
+// puts playbackRate back to defaultPlaybackRate.
+function setSpeed(rate) {
+  player.speed = rate || 1;
+  player.audio.defaultPlaybackRate = player.speed;
+  player.audio.playbackRate = player.speed;
+}
 
 function skip(sec) { seekTo(playerPosition() + sec * 1000); }
 function chapterJump(dir) {
@@ -1411,6 +1429,8 @@ function mediaSession() {
 
 const SPEEDS = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5];
 
+// drawPlayer builds the bar when the book changes; otherwise it only updates what
+// moved, so seeking or pausing never rebuilds the cover or the slider under the pointer.
 function drawPlayer() {
   if (!player.bar) {
     player.bar = el("div", { class: "player", id: "player" });
@@ -1418,15 +1438,17 @@ function drawPlayer() {
   }
   document.body.classList.toggle("playing", !!player.book);
   const b = player.book;
-  if (!b) { player.bar.replaceChildren(); return; }
+  if (!b) { player.bar.replaceChildren(); player.drawn = null; return; }
+  if (player.drawn === b) return updatePlayerControls();
+  player.drawn = b;
   const scrub = el("input", { type: "range", class: "scrub", min: 0, max: b.durationMs, step: "any", value: playerPosition(), "aria-label": "Position",
     oninput: (e) => { scrub.dataset.dragging = "1"; times.firstChild.textContent = fmtClock(Number(e.target.value)); },
     onchange: (e) => { delete scrub.dataset.dragging; seekTo(Number(e.target.value)); } });
   const times = el("div", { class: "times tiny muted" }, span("", ""), span("", ""));
   const chapter = el("div", { class: "small muted clip", id: "player-chapter" });
   const speed = el("select", { "aria-label": "Speed", class: "mini-select", onchange: (e) => {
-    player.audio.playbackRate = Number(e.target.value); state.prefs.speed = e.target.value; savePrefs();
-  } }, SPEEDS.map((v) => el("option", { value: v, selected: player.audio.playbackRate === v ? true : null }, v + "×")));
+    setSpeed(Number(e.target.value)); state.prefs.speed = e.target.value; savePrefs();
+  } }, SPEEDS.map((v) => el("option", { value: v, selected: player.speed === v ? true : null }, v + "×")));
   const sleep = el("select", { "aria-label": "Sleep timer", class: "mini-select", onchange: (e) => {
     const v = e.target.value;
     player.sleepAt = v === "chapter" ? -1 : v === "0" ? 0 : Date.now() + Number(v) * 60000;
@@ -1439,8 +1461,7 @@ function drawPlayer() {
     el("div", { class: "p-controls" },
       iconBtn("prev", "Previous chapter", () => chapterJump(-1)),
       iconBtn("replay", "Back 30 seconds", () => skip(-30)),
-      el("button", { class: "p-play", type: "button", "aria-label": player.audio.paused ? "Play" : "Pause", onclick: () => player.audio.paused ? player.audio.play() : player.audio.pause() },
-        icon(player.audio.paused ? "play" : "pause")),
+      el("button", { class: "p-play", type: "button", onclick: () => player.audio.paused ? player.audio.play() : player.audio.pause() }),
       iconBtn("forward", "Forward 30 seconds", () => skip(30)),
       iconBtn("next", "Next chapter", () => chapterJump(1))),
     el("div", { class: "p-track" }, scrub, times),
@@ -1452,6 +1473,19 @@ function drawPlayer() {
   player.scrub = scrub;
   player.times = times;
   player.chapter = chapter;
+  player.sleep = sleep;
+  updatePlayerControls();
+}
+
+function updatePlayerControls() {
+  const btn = player.bar.querySelector(".p-play");
+  const paused = player.audio.paused && player.pendingSeek == null;
+  if (btn.dataset.state !== String(paused)) {
+    btn.dataset.state = String(paused);
+    btn.setAttribute("aria-label", paused ? "Play" : "Pause");
+    btn.replaceChildren(icon(paused ? "play" : "pause"));
+  }
+  player.sleep.value = player.sleepAt === -1 ? "chapter" : player.sleepAt > 0 ? player.sleep.value : "0";
   updatePlayerTime();
 }
 
