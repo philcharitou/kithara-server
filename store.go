@@ -1,18 +1,13 @@
 package main
 
 import (
-	"crypto/pbkdf2"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -57,161 +52,81 @@ type store struct {
 	mu     sync.Mutex
 	userDB map[string]userRecord  // name -> record
 	tokens map[string]tokenRecord // token -> record
+
+	// What users.json and tokens.json looked like when last read or written, so that
+	// changes made by the command line while the server runs are picked up.
+	usersSeen, tokensSeen fileStamp
 }
 
-type userRecord struct {
-	Salt string `json:"salt"`
-	Hash string `json:"hash"`
-	Iter int    `json:"iter"`
+type fileStamp struct {
+	mod  time.Time
+	size int64
 }
 
-type tokenRecord struct {
-	User      string `json:"user"`
-	Device    string `json:"device,omitempty"`
-	CreatedAt int64  `json:"createdAt"`
+func stampOf(path string) fileStamp {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{info.ModTime(), info.Size()}
 }
-
-const pbkdfIterations = 600_000
-
-var userNameRe = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,64}$`)
 
 func openStore(dir string) (*store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "users"), 0o755); err != nil {
 		return nil, err
 	}
-	s := &store{dir: dir, userDB: map[string]userRecord{}, tokens: map[string]tokenRecord{}}
-	if err := readJSON(filepath.Join(dir, "users.json"), &s.userDB); err != nil {
+	s := &store{dir: dir}
+	if err := s.reload(); err != nil {
 		return nil, err
 	}
-	if err := readJSON(filepath.Join(dir, "tokens.json"), &s.tokens); err != nil {
+	if err := s.migrateRoles(); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-// ------------------------------------------------------------------ users
-
-func (s *store) users() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	names := make([]string, 0, len(s.userDB))
-	for n := range s.userDB {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
-}
-
-func (s *store) setPassword(name, password string) error {
-	if !userNameRe.MatchString(name) {
-		return fmt.Errorf("user names are letters, digits and . _ @ - (1 to 64 characters)")
-	}
-	if len(password) < 8 {
-		return errors.New("use at least 8 characters")
-	}
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return err
-	}
-	hash, err := pbkdf2.Key(sha256.New, password, salt, pbkdfIterations, 32)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.userDB[name] = userRecord{Salt: hex.EncodeToString(salt), Hash: hex.EncodeToString(hash), Iter: pbkdfIterations}
-	if err := os.MkdirAll(filepath.Join(s.dir, "users", name), 0o755); err != nil {
-		return err
-	}
-	// A password change signs every device out; they ask for it again.
-	for t, rec := range s.tokens {
-		if rec.User == name {
-			delete(s.tokens, t)
+// reload reads users.json and tokens.json if they changed since last seen; the caller
+// holds s.mu (or owns s outright).
+func (s *store) reload() error {
+	up, tp := filepath.Join(s.dir, "users.json"), filepath.Join(s.dir, "tokens.json")
+	if st := stampOf(up); st != s.usersSeen || s.userDB == nil {
+		db := map[string]userRecord{}
+		if err := readJSON(up, &db); err != nil {
+			return err
 		}
+		s.userDB, s.usersSeen = db, st
 	}
-	if err := writeJSON(filepath.Join(s.dir, "tokens.json"), s.tokens); err != nil {
-		return err
-	}
-	return writeJSON(filepath.Join(s.dir, "users.json"), s.userDB)
-}
-
-func (s *store) removeUser(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.userDB[name]; !ok {
-		return fmt.Errorf("no user %q", name)
-	}
-	delete(s.userDB, name)
-	for t, rec := range s.tokens {
-		if rec.User == name {
-			delete(s.tokens, t)
+	if st := stampOf(tp); st != s.tokensSeen || s.tokens == nil {
+		tokens := map[string]tokenRecord{}
+		if err := readJSON(tp, &tokens); err != nil {
+			return err
 		}
-	}
-	if err := writeJSON(filepath.Join(s.dir, "tokens.json"), s.tokens); err != nil {
-		return err
-	}
-	if err := writeJSON(filepath.Join(s.dir, "users.json"), s.userDB); err != nil {
-		return err
-	}
-	// The listening state is small and precious; keep it aside rather than delete it.
-	old := filepath.Join(s.dir, "users", name)
-	if _, err := os.Stat(old); err == nil {
-		_ = os.Rename(old, old+".removed-"+time.Now().Format("20060102-150405"))
+		s.tokens, s.tokensSeen = tokens, st
 	}
 	return nil
 }
 
-func (s *store) checkPassword(name, password string) bool {
+// lockFresh takes s.mu with users and tokens up to date. A file that will not read
+// (half-written by hand) leaves what was there before.
+func (s *store) lockFresh() {
 	s.mu.Lock()
-	rec, ok := s.userDB[name]
-	s.mu.Unlock()
-	if !ok {
-		// Burn the same time as a real check so a missing user is not a faster answer.
-		_, _ = pbkdf2.Key(sha256.New, password, []byte("no-such-user-padding"), pbkdfIterations, 32)
-		return false
+	if err := s.reload(); err != nil {
+		log.Printf("users and tokens: %v", err)
 	}
-	salt, _ := hex.DecodeString(rec.Salt)
-	want, _ := hex.DecodeString(rec.Hash)
-	got, err := pbkdf2.Key(sha256.New, password, salt, rec.Iter, len(want))
-	if err != nil {
-		return false
-	}
-	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-// ------------------------------------------------------------------ tokens
-
-func (s *store) issueToken(user, device string) (string, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	token := hex.EncodeToString(raw)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.tokens[token] = tokenRecord{User: user, Device: device, CreatedAt: time.Now().UnixMilli()}
-	return token, writeJSON(filepath.Join(s.dir, "tokens.json"), s.tokens)
+func (s *store) saveUsers() error {
+	p := filepath.Join(s.dir, "users.json")
+	err := writeJSON(p, s.userDB)
+	s.usersSeen = stampOf(p)
+	return err
 }
 
-// userFor returns the user a bearer token belongs to, or "".
-func (s *store) userFor(token string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rec, ok := s.tokens[token]
-	if !ok {
-		return ""
-	}
-	if _, stillThere := s.userDB[rec.User]; !stillThere {
-		return ""
-	}
-	return rec.User
-}
-
-func (s *store) revokeToken(token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.tokens, token)
-	return writeJSON(filepath.Join(s.dir, "tokens.json"), s.tokens)
+func (s *store) saveTokens() error {
+	p := filepath.Join(s.dir, "tokens.json")
+	err := writeJSON(p, s.tokens)
+	s.tokensSeen = stampOf(p)
+	return err
 }
 
 // ------------------------------------------------------------------ progress

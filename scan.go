@@ -48,6 +48,7 @@ type Book struct {
 	ASIN          string   `json:"asin,omitempty"`
 
 	coverPath string
+	dir       string // the book's folder (for a lone file, the folder it sits in)
 }
 
 type File struct {
@@ -85,6 +86,8 @@ type library struct {
 	cat    Catalogue
 	byID   map[string]*Book
 	view   map[string]catalogueView // "" is everything; else a root's name
+	combos map[string]catalogueView // for users limited to several libraries, built on demand
+	gen    int                      // scans so far, so a view built from an older one is not kept
 	probe  *probeCache
 }
 
@@ -134,7 +137,7 @@ func newLibrary(root, dataDir string) *library {
 // newLibraries sets up a library over several folders. Each keeps its path records
 // in ids-<name>.json; the first takes over the ids.json of a single-folder setup.
 func newLibraries(specs []libSpec, dataDir string) *library {
-	l := &library{dataDir: dataDir, byID: map[string]*Book{}, view: map[string]catalogueView{}}
+	l := &library{dataDir: dataDir, byID: map[string]*Book{}, view: map[string]catalogueView{}, combos: map[string]catalogueView{}}
 	l.probe = openProbeCache(filepath.Join(dataDir, "probe-cache.json"))
 	for i, sp := range specs {
 		r := &libRoot{name: sp.Name, path: sp.Path, ids: map[string]string{}}
@@ -193,14 +196,68 @@ func (l *library) catalogue(name string) (catalogueView, bool) {
 	return catalogueView{}, false
 }
 
-func (l *library) libraries() []LibraryInfo {
+// catalogueFor is catalogue as one account may see it: an unknown library and one the
+// account may not see are alike not there, and without a name, everything it may see.
+func (l *library) catalogueFor(a Account, name string) (catalogueView, bool) {
+	if name != "" || a.admin() || len(a.Libraries) == 0 {
+		v, ok := l.catalogue(name)
+		if ok && name != "" && !a.sees(v.info.Name) {
+			return catalogueView{}, false
+		}
+		return v, ok
+	}
+	var names []string
+	for _, r := range l.roots {
+		if a.sees(r.name) {
+			names = append(names, r.name)
+		}
+	}
+	key := strings.Join(names, "|")
+	l.mu.RLock()
+	v, ok := l.combos[key]
+	cat, gen := l.cat, l.gen
+	l.mu.RUnlock()
+	if ok {
+		return v, true
+	}
+	var mine []Book
+	for _, b := range cat.Books {
+		if a.sees(b.Library) {
+			mine = append(mine, b)
+		}
+	}
+	v, err := buildView("", mine)
+	if err != nil {
+		return catalogueView{}, false
+	}
+	l.mu.Lock()
+	if l.gen == gen {
+		l.combos[key] = v
+	}
+	l.mu.Unlock()
+	return v, true
+}
+
+// libraries lists the libraries an account may see.
+func (l *library) libraries(a Account) []LibraryInfo {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	out := make([]LibraryInfo, 0, len(l.roots))
 	for _, r := range l.roots {
-		out = append(out, l.view[r.name].info)
+		if a.sees(r.name) {
+			out = append(out, l.view[r.name].info)
+		}
 	}
 	return out
+}
+
+// bookFor is book, for an account: nil when it may not see it.
+func (l *library) bookFor(a Account, id string) *Book {
+	b := l.book(id)
+	if b == nil || !a.sees(b.Library) {
+		return nil
+	}
+	return b
 }
 
 func (l *library) snapshot() Catalogue {
@@ -280,7 +337,8 @@ func (l *library) rescan() error {
 	}
 
 	l.mu.Lock()
-	l.cat, l.byID, l.view = cat, byID, views
+	l.cat, l.byID, l.view, l.combos = cat, byID, views, map[string]catalogueView{}
+	l.gen++
 	l.mu.Unlock()
 	l.probe.save()
 	log.Printf("scanned %d books in %s", len(cat.Books), time.Since(start).Round(time.Millisecond))
@@ -476,7 +534,7 @@ func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitl
 	if err != nil {
 		return Book{}, err
 	}
-	b := Book{ID: id, Title: fallbackTitle, Library: r.name, Files: []File{}, Chapters: []Chapter{}}
+	b := Book{ID: id, Title: fallbackTitle, Library: r.name, Files: []File{}, Chapters: []Chapter{}, dir: dir}
 
 	// The folders above the book, for author and series: all of them for a lone file,
 	// all but the book's own for a book folder.
@@ -553,8 +611,22 @@ func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitl
 		}
 	}
 
-	// Cover: a picture in the folder, else one pulled out of the first file.
-	if !single {
+	// What an admin set or matched, kept in the data folder, has the very last word.
+	if om, modified := overrideMeta(l.dataDir, id); modified > 0 {
+		b.apply(om)
+		b.UpdatedAt = max(b.UpdatedAt, modified)
+		if chs := clampChapters(om.Chapters, b.DurationMs); len(chs) > 0 {
+			b.Chapters = chs
+		}
+	}
+
+	// Cover: one chosen through matching, else a picture in the folder, else one
+	// pulled out of the first file.
+	if p, modified := overrideCover(l.dataDir, id); p != "" {
+		b.coverPath = p
+		b.UpdatedAt = max(b.UpdatedAt, modified)
+	}
+	if !single && b.coverPath == "" {
 		for _, n := range coverName {
 			p := filepath.Join(dir, n)
 			if info, err := os.Stat(p); err == nil {

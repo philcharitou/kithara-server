@@ -18,11 +18,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
-const serverVersion = "0.1.1"
+const serverVersion = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -34,6 +33,8 @@ func main() {
 		serveCmd(os.Args[2:])
 	case "user":
 		userCmd(os.Args[2:])
+	case "match":
+		matchCmd(os.Args[2:])
 	case "scan":
 		scanCmd(os.Args[2:])
 	case "version":
@@ -49,8 +50,18 @@ func usage() {
   kithara-server serve  [--library [NAME=]DIR ...] [--data DIR] [--addr :8080] [--name "My shelf"]
                         [--rescan 10m] [--trust-proxy]
   kithara-server scan   [--library [NAME=]DIR ...] [--data DIR]   scan once and print the catalogue
-  kithara-server user add|remove|list|passwd [NAME] [--data DIR]
+  kithara-server match  [--provider audible|openlibrary|google] [--apply N] BOOK_ID
+                        look a book up and keep a result as its metadata
+  kithara-server user list
+  kithara-server user add NAME [--admin] [--libraries A,B]   (the first user is an admin)
+  kithara-server user passwd|remove NAME
+  kithara-server user role NAME admin|user
+  kithara-server user libraries NAME A,B|all
+  kithara-server user devices NAME
+  kithara-server user signout NAME [DEVICE_ID]               (all devices without an id)
   kithara-server version
+
+Every command takes --data DIR; serve, scan and match take --library.
 
 --library can be given more than once; each folder is a library of its own, named
 after the folder unless NAME= says otherwise.
@@ -164,7 +175,7 @@ func scanCmd(args []string) {
 	for _, b := range lib.snapshot().Books {
 		fmt.Printf("%-12s %-14s %-40s %s  %d file(s), %d chapter(s), %s\n", b.ID, trunc(b.Library, 14), trunc(b.Title, 40), fmtDuration(b.DurationMs), len(b.Files), len(b.Chapters), b.Author)
 	}
-	for _, li := range lib.libraries() {
+	for _, li := range lib.libraries(Account{Role: roleAdmin}) {
 		fmt.Printf("%s: %d books, %s\n", li.Name, li.Books, fmtDuration(li.DurationMs))
 	}
 }
@@ -178,32 +189,38 @@ func userCmd(args []string) {
 	fs := flag.NewFlagSet("user "+sub, flag.ExitOnError)
 	d := dirFlags(fs)
 	password := fs.String("password", "", "password (prompted for when omitted)")
-	rest := []string{}
-	// Allow `user add NAME --data DIR` as well as `user add --data DIR NAME`.
-	for _, a := range args[1:] {
-		if strings.HasPrefix(a, "-") || len(rest) > 0 && strings.HasPrefix(rest[len(rest)-1], "-") {
-			rest = append(rest, a)
-		} else {
-			rest = append([]string{a}, rest...)
+	admin := fs.Bool("admin", false, "user add: make the new user an admin")
+	libraries := fs.String("libraries", "", "user add: the libraries the user may see, comma-separated (default all)")
+	pos := splitArgs(fs, args[1:])
+	arg := func(i int, what string) string {
+		if i >= len(pos) {
+			log.Fatalf("%s is required", what)
 		}
+		return pos[i]
 	}
-	var name string
-	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-		name, rest = rest[0], rest[1:]
-	}
-	fs.Parse(rest)
 	store, err := openStore(d.data)
 	if err != nil {
 		log.Fatalf("data directory: %v", err)
 	}
 	switch sub {
 	case "list":
-		for _, u := range store.users() {
-			fmt.Println(u)
+		for _, a := range store.accounts() {
+			libs := "all libraries"
+			if a.admin() {
+				libs = "everything"
+			} else if len(a.Libraries) > 0 {
+				libs = strings.Join(a.Libraries, ", ")
+			}
+			fmt.Printf("%-20s %-6s %d device(s)  %s\n", a.Name, a.Role, a.Devices, libs)
 		}
 	case "add", "passwd":
-		if name == "" {
-			log.Fatal("a user name is required")
+		name := arg(0, "a user name")
+		_, existed := store.account(name)
+		if sub == "add" && existed {
+			log.Fatalf("user %q exists; `user passwd %s` changes the password", name, name)
+		}
+		if sub == "passwd" && !existed {
+			log.Fatalf("no user %q", name)
 		}
 		pw := *password
 		if pw == "" {
@@ -212,11 +229,59 @@ func userCmd(args []string) {
 		if err := store.setPassword(name, pw); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("user %q ready\n", name)
-	case "remove":
-		if name == "" {
-			log.Fatal("a user name is required")
+		if *admin {
+			if err := store.setRole(name, roleAdmin); err != nil {
+				log.Fatal(err)
+			}
 		}
+		if *libraries != "" {
+			if err := store.setLibraries(name, strings.Split(*libraries, ",")); err != nil {
+				log.Fatal(err)
+			}
+		}
+		a, _ := store.account(name)
+		fmt.Printf("user %q ready (%s)\n", name, a.Role)
+	case "role":
+		name, role := arg(0, "a user name"), arg(1, "a role (admin or user)")
+		if err := store.setRole(name, role); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("%s is now %s\n", name, role)
+	case "libraries":
+		name, list := arg(0, "a user name"), arg(1, "a comma-separated list of libraries, or all")
+		var libs []string
+		if !strings.EqualFold(list, "all") {
+			libs = strings.Split(list, ",")
+		}
+		if err := store.setLibraries(name, libs); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("%s sees %s\n", name, list)
+	case "devices":
+		name := arg(0, "a user name")
+		if _, ok := store.account(name); !ok {
+			log.Fatalf("no user %q", name)
+		}
+		for _, dv := range store.devices(name, "") {
+			seen := "never"
+			if dv.LastSeenAt > 0 {
+				seen = time.UnixMilli(dv.LastSeenAt).Format("2006-01-02 15:04")
+			}
+			fmt.Printf("%s  %-24s signed in %s, last seen %s\n", dv.ID, trunc(dv.Name, 24), time.UnixMilli(dv.CreatedAt).Format("2006-01-02"), seen)
+		}
+	case "signout":
+		name := arg(0, "a user name")
+		id := ""
+		if len(pos) > 1 {
+			id = pos[1]
+		}
+		n, err := store.revokeDevices(name, id)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("signed out %d device(s) of %s\n", n, name)
+	case "remove":
+		name := arg(0, "a user name")
 		if err := store.removeUser(name); err != nil {
 			log.Fatal(err)
 		}
@@ -225,6 +290,115 @@ func userCmd(args []string) {
 		usage()
 		os.Exit(2)
 	}
+}
+
+// splitArgs separates positional arguments from flags, so a command's flags may come
+// before or after its arguments (`user add NAME --data DIR` and `user add --data DIR
+// NAME` alike), and parses the flags.
+func splitArgs(fs *flag.FlagSet, args []string) (positional []string) {
+	var flags []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			positional = append(positional, a)
+			continue
+		}
+		flags = append(flags, a)
+		name := strings.TrimLeft(a, "-")
+		if strings.Contains(name, "=") {
+			continue
+		}
+		f := fs.Lookup(name)
+		if f == nil {
+			continue
+		}
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	fs.Parse(flags)
+	return positional
+}
+
+// matchCmd looks a book up with a metadata provider and, with --apply N, keeps the
+// N-th result for it; a running server shows it after its next rescan.
+func matchCmd(args []string) {
+	fs := flag.NewFlagSet("match", flag.ExitOnError)
+	d := dirFlags(fs)
+	provider := fs.String("provider", "audible", "audible, openlibrary or google")
+	region := fs.String("region", "us", "audible region: us, uk, ca, au, de, fr, it, es, in, jp")
+	title := fs.String("title", "", "search for this title instead of the book's own")
+	author := fs.String("author", "", "search for this author instead of the book's own")
+	asin := fs.String("asin", "", "audible: look up this product directly")
+	apply := fs.Int("apply", 0, "keep result N (1 is the first) as the book's metadata and cover")
+	noCover := fs.Bool("no-cover", false, "with --apply, leave the cover alone")
+	clear := fs.Bool("clear", false, "forget any metadata kept for the book")
+	pos := splitArgs(fs, args)
+	if len(pos) != 1 {
+		log.Fatal("usage: kithara-server match [flags] BOOK_ID   (ids are in the first column of `scan`)")
+	}
+	id := pos[0]
+	lib := newLibraries(d.specs(), d.data)
+	if err := lib.rescan(); err != nil {
+		log.Printf("scan: %v", err)
+	}
+	b := lib.book(id)
+	if b == nil {
+		log.Fatalf("no book %q", id)
+	}
+	if *clear {
+		clearOverride(d.data, id)
+		fmt.Printf("forgot the metadata kept for %q\n", b.Title)
+		return
+	}
+	q := MatchQuery{Provider: *provider, Region: *region, Title: *title, Author: *author, ASIN: *asin}
+	if q.Title == "" && q.ASIN == "" {
+		q.Title, q.Author = b.Title, firstAuthor(b.Author)
+	}
+	m := newMatcher()
+	results, err := m.search(q)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *apply == 0 {
+		fmt.Printf("%s: %q by %s\n", b.ID, b.Title, b.Author)
+		for i, c := range results {
+			series := ""
+			if c.Series != "" {
+				series = "  [" + c.Series
+				if c.SeriesIndex != nil {
+					series += fmt.Sprintf(" #%g", *c.SeriesIndex)
+				}
+				series += "]"
+			}
+			fmt.Printf("%2d. %s, %s (%s)%s\n", i+1, c.Title, strings.Join(c.Authors, ", "), c.PublishedYear, series)
+		}
+		if len(results) == 0 {
+			fmt.Println("nothing found; try --title, --author or another --provider")
+		} else {
+			fmt.Printf("keep one with: kithara-server match --provider %s --apply N %s\n", q.Provider, id)
+		}
+		return
+	}
+	if *apply < 1 || *apply > len(results) {
+		log.Fatalf("--apply %d: there are %d results", *apply, len(results))
+	}
+	c := results[*apply-1]
+	cover := c.CoverURL
+	c.CoverURL = ""
+	if err := saveOverride(d.data, id, c); err != nil {
+		log.Fatal(err)
+	}
+	if cover != "" && !*noCover {
+		if err := m.saveCover(d.data, id, cover); err != nil {
+			log.Printf("cover: %v", err)
+		}
+	}
+	fmt.Printf("kept %q for %s; a running server shows it after its next rescan\n", c.Title, id)
 }
 
 func promptPassword() string {
@@ -258,7 +432,3 @@ func fmtDuration(ms int64) string {
 	d := time.Duration(ms) * time.Millisecond
 	return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
 }
-
-// keep imports honest on every platform
-var _ = filepath.Join
-var _ = syscall.Getpid

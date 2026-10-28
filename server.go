@@ -24,18 +24,20 @@ type server struct {
 	// forgetful owner) before both stop for a while.
 	ipLimit, userLimit *loginLimiter
 	trustProxy         bool // take the client address from X-Forwarded-For
+
+	match *matcher
 }
 
 func newServer(st *store, lib *library, name string) *server {
 	s := &server{store: st, lib: lib, name: name, mux: http.NewServeMux(),
-		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute)}
+		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher()}
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.health)
 	m.HandleFunc("POST /api/auth", s.auth)
 	m.HandleFunc("POST /api/auth/logout", s.withUser(s.logout))
 	m.HandleFunc("GET /api/library", s.withUser(s.libraryHandler))
 	m.HandleFunc("GET /api/libraries", s.withUser(s.librariesHandler))
-	m.HandleFunc("POST /api/rescan", s.withUser(s.rescan))
+	m.HandleFunc("POST /api/rescan", s.withAdmin(s.rescan))
 	m.HandleFunc("GET /api/progress", s.withUser(s.allProgress))
 	m.HandleFunc("PUT /api/progress/{bookId}", s.withUser(s.putProgress))
 	m.HandleFunc("DELETE /api/progress/{bookId}", s.withUser(s.deleteProgress))
@@ -48,6 +50,20 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("HEAD /audio/{bookId}/{index}", s.withUser(s.audio))
 	m.HandleFunc("GET /covers/{bookId}", s.withUser(s.cover))
 	m.HandleFunc("HEAD /covers/{bookId}", s.withUser(s.cover))
+	m.HandleFunc("GET /api/books/{bookId}/download", s.withUser(s.download))
+
+	m.HandleFunc("GET /api/me", s.withUser(s.me))
+	m.HandleFunc("GET /api/devices", s.withUser(s.listDevices))
+	m.HandleFunc("DELETE /api/devices/{id}", s.withUser(s.revokeDevice))
+
+	m.HandleFunc("GET /api/users", s.withAdmin(s.listUsers))
+	m.HandleFunc("POST /api/users", s.withAdmin(s.createUser))
+	m.HandleFunc("PATCH /api/users/{name}", s.withAdmin(s.updateUser))
+	m.HandleFunc("DELETE /api/users/{name}", s.withAdmin(s.deleteUser))
+
+	m.HandleFunc("GET /api/books/{bookId}/match", s.withAdmin(s.matchBook))
+	m.HandleFunc("PUT /api/books/{bookId}/metadata", s.withAdmin(s.putMetadata))
+	m.HandleFunc("DELETE /api/books/{bookId}/metadata", s.withAdmin(s.deleteMetadata))
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -101,6 +117,23 @@ func (s *server) withUser(h userHandler) http.HandlerFunc {
 		}
 		h(w, r, user, token)
 	}
+}
+
+// withAdmin is withUser for admins only; anyone else signed in gets 403.
+func (s *server) withAdmin(h userHandler) http.HandlerFunc {
+	return s.withUser(func(w http.ResponseWriter, r *http.Request, user, token string) {
+		if !s.acct(user).admin() {
+			writeError(w, http.StatusForbidden, "only an admin can do that")
+			return
+		}
+		h(w, r, user, token)
+	})
+}
+
+// acct is the signed-in user's account (withUser has made sure there is one).
+func (s *server) acct(user string) Account {
+	a, _ := s.store.account(user)
+	return a
 }
 
 func writeJSONResponse(w http.ResponseWriter, status int, v any) {
@@ -157,7 +190,7 @@ func (s *server) auth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSONResponse(w, 200, map[string]string{"token": token, "user": in.Username})
+	writeJSONResponse(w, 200, map[string]string{"token": token, "user": in.Username, "role": s.acct(in.Username).Role})
 }
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request, user, token string) {
@@ -171,7 +204,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request, user, token stri
 func (s *server) libraryHandler(w http.ResponseWriter, r *http.Request, user, token string) {
 	// ?library=NAME narrows the catalogue to one library folder; without it, all of
 	// them, as the protocol expects.
-	view, ok := s.lib.catalogue(r.URL.Query().Get("library"))
+	view, ok := s.lib.catalogueFor(s.acct(user), r.URL.Query().Get("library"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "no such library")
 		return
@@ -190,7 +223,7 @@ func (s *server) libraryHandler(w http.ResponseWriter, r *http.Request, user, to
 }
 
 func (s *server) librariesHandler(w http.ResponseWriter, r *http.Request, user, token string) {
-	writeJSONResponse(w, 200, map[string]any{"libraries": s.lib.libraries()})
+	writeJSONResponse(w, 200, map[string]any{"libraries": s.lib.libraries(s.acct(user))})
 }
 
 func (s *server) rescan(w http.ResponseWriter, r *http.Request, user, token string) {
@@ -212,7 +245,7 @@ func (s *server) allProgress(w http.ResponseWriter, r *http.Request, user, token
 
 func (s *server) putProgress(w http.ResponseWriter, r *http.Request, user, token string) {
 	bookID := r.PathValue("bookId")
-	if s.lib.book(bookID) == nil {
+	if s.lib.bookFor(s.acct(user), bookID) == nil {
 		writeError(w, http.StatusNotFound, "no such book")
 		return
 	}
@@ -291,7 +324,7 @@ func (s *server) allBookmarks(w http.ResponseWriter, r *http.Request, user, toke
 
 func (s *server) addBookmark(w http.ResponseWriter, r *http.Request, user, token string) {
 	bookID := r.PathValue("bookId")
-	if s.lib.book(bookID) == nil {
+	if s.lib.bookFor(s.acct(user), bookID) == nil {
 		writeError(w, http.StatusNotFound, "no such book")
 		return
 	}
@@ -325,7 +358,7 @@ func (s *server) deleteBookmark(w http.ResponseWriter, r *http.Request, user, to
 
 // audio serves one file of a book with range support, via http.ServeContent.
 func (s *server) audio(w http.ResponseWriter, r *http.Request, user, token string) {
-	b := s.lib.book(r.PathValue("bookId"))
+	b := s.lib.bookFor(s.acct(user), r.PathValue("bookId"))
 	idx, err := strconv.Atoi(r.PathValue("index"))
 	if b == nil || err != nil || idx < 0 || idx >= len(b.Files) {
 		writeError(w, http.StatusNotFound, "no such file")
@@ -356,7 +389,7 @@ func (s *server) audio(w http.ResponseWriter, r *http.Request, user, token strin
 }
 
 func (s *server) cover(w http.ResponseWriter, r *http.Request, user, token string) {
-	b := s.lib.book(r.PathValue("bookId"))
+	b := s.lib.bookFor(s.acct(user), r.PathValue("bookId"))
 	if b == nil || b.coverPath == "" {
 		writeError(w, http.StatusNotFound, "no cover")
 		return

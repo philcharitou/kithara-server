@@ -20,7 +20,7 @@ handful of JSON files. It implements version 1 of the
 ## Quick start
 
 ```bash
-kithara-server user add phil                  # asks for a password (8+ characters)
+kithara-server user add phil                  # asks for a password (8+ characters); the first user is the admin
 kithara-server serve --library ~/Audiobooks --data ~/.kithara-server --name "Phil's shelf"
 ```
 
@@ -68,28 +68,75 @@ keeps the books from its last good scan instead of vanishing from every device.
   chapter each, named from their `title` tag or file name.
 - **Cover**: `cover.jpg`/`cover.png`/`folder.jpg` in the folder, else the artwork embedded in
   the first file.
+- Metadata and covers an admin has matched or edited (see below) override all of the
+  above.
 - Each book folder gets a tiny `.kithara-id` file so its id survives renames and moves
   and your listening position stays attached. If the folder is read-only, the id is kept
   in the data folder keyed by path instead (and a rename then looks like a new book).
 
 Changed and new books are picked up every `--rescan` interval (default 10 minutes), on a
-`POST /api/rescan` from a signed-in client, and at start. Probing is cached by file size
+`POST /api/rescan` from an admin, and at start. Probing is cached by file size
 and modification time, so rescans of a large unchanged library cost almost nothing.
+
+## Users, roles and devices
+
+The first user you add is an **admin**; later ones are plain **users** unless you say
+otherwise. Admins can rescan, manage users and devices, and match or edit metadata.
+Users listen. A user can also be limited to some libraries, and books outside them don't
+exist as far as that user's devices are concerned. Admins always see everything.
+
+```bash
+kithara-server user add anna                        # a plain user who sees every library
+kithara-server user add sam --libraries Kids        # sees only the Kids library
+kithara-server user role anna admin                 # or back to: user
+kithara-server user libraries sam Kids,Lectures     # or: all
+kithara-server user list                            # names, roles, libraries, device counts
+kithara-server user devices anna                    # where anna is signed in, and when last seen
+kithara-server user signout anna 3f9a1c0b2d4e       # one device, by the id from `user devices`
+kithara-server user signout anna                    # every device
+```
+
+These commands work on the data folder while the server is running (for example via
+`docker exec`). The server picks the changes up on the next request, with no restart.
+Users from a version before roles existed all become admins on upgrade, because back
+then everyone could do everything. Demote any who shouldn't be. The last admin can't
+be demoted or removed.
+
+## Metadata matching
+
+An admin can look a book up with **Audible**, **Open Library** or **Google Books** and
+keep the result:
+
+```bash
+kithara-server match 8f949203900f                     # list Audible's results (ids: `scan`)
+kithara-server match --provider openlibrary 8f949203900f
+kithara-server match --title "The Hobbit" --region uk 8f949203900f
+kithara-server match --apply 1 8f949203900f           # keep the first result and its cover
+kithara-server match --clear 8f949203900f             # forget it again
+```
+
+The server contacts these services only when an admin asks, for one book at a time. The
+chosen metadata is saved in the data folder, never written into the library, so a
+read-only library works. It overrides everything read from the library. Covers are only
+fetched over https from the providers' image hosts. Google Books often answers
+`429 Too Many Requests` without an API key; set `KITHARA_GOOGLE_BOOKS_KEY` to use one.
 
 ## Data folder
 
 ```
-users.json            user names and password hashes (PBKDF2-SHA256, 600k rounds)
-tokens.json           device tokens, one per sign-in
+users.json            user names, roles, libraries and password hashes (PBKDF2-SHA256, 600k rounds)
+tokens.json           device tokens, one per sign-in, with when each was last seen
 users/<name>/progress.json
 users/<name>/bookmarks.json
 users/<name>/sessions.json  listening sessions, worked out from progress
 probe-cache.json      ffprobe results, by file
-covers/               artwork extracted from files
+covers/               artwork extracted from files, and covers chosen by matching
+metadata/<bookId>.json  metadata an admin matched or edited (audiobookshelf's format)
 ids-<library>.json    ids by path, for each library (ids.json in older versions)
 ```
 
-Back up the `users/` folder; everything else is rebuilt from the library.
+Back up `users.json`, the `users/` folder and `metadata/` (plus `covers/*-match.*`).
+Everything else is rebuilt from the library.
 Removing a user (`user remove NAME`) signs their devices out and moves their
 listening state aside rather than deleting it.
 
@@ -161,7 +208,7 @@ Everything the app talks is in the protocol document. Server specifics:
   `409` with the stored record when the incoming `updatedAt` is older.
 - `GET /api/library` carries an `ETag`; send it back as `If-None-Match` to get `304`
   when nothing has changed.
-- `POST /api/rescan` (bearer) triggers a scan and returns the book count.
+- `POST /api/rescan` (admin) triggers a scan and returns the book count.
 - `DELETE /api/progress/{bookId}` forgets a position (not used by the app; handy for
   scripts).
 - Progress records also carry `startedAt` and `finishedAt`, kept by the server.
@@ -179,6 +226,27 @@ Everything the app talks is in the protocol document. Server specifics:
   are unaffected. Behind a reverse proxy, pass `--trust-proxy` (or
   `KITHARA_TRUST_PROXY=1`) so the limit applies per client, not to the proxy; leave it off
   otherwise, or clients could choose their own address.
+- `POST /api/auth` also returns the user's `role`. `GET /api/me` returns the signed-in
+  account (`name`, `role`, `libraries`, `devices`).
+- **Devices:** `GET /api/devices` lists the caller's signed-in devices (`id`, `name`,
+  `createdAt`, `lastSeenAt`, `current`); `DELETE /api/devices/{id}` signs one out. Admins
+  can pass `?user=NAME` to act on someone else's devices. Tokens are never listed.
+- **Users (admin):** `GET /api/users`; `POST /api/users` with `username`, `password` and
+  optionally `role` and `libraries`; `PATCH /api/users/{name}` with any of `password`,
+  `role` and `libraries` (`[]` means all libraries); `DELETE /api/users/{name}`.
+- **Library access:** a user limited to some libraries gets `404` for books outside them
+  on every route, and those books are left out of `/api/library` and `/api/libraries`.
+  Admin-only routes answer `403` to plain users.
+- **Download:** `GET /api/books/{bookId}/download` sends the whole book as a zip: its
+  files under their paths in the book folder (so disc folders stay apart), plus its cover.
+- **Metadata (admin):** `GET /api/books/{bookId}/match?provider=audible|openlibrary|google`
+  searches by the book's own title and author, or by `title`, `author`, `asin` (Audible)
+  and `region` (Audible: us, uk, ca, au, de, fr, it, es, in, jp). Each result is a set of
+  metadata fields plus `coverUrl`. `PUT /api/books/{bookId}/metadata` with a result,
+  or with fields typed by hand, saves them (replacing whatever was saved before) and
+  fetches `coverUrl` if one is given. A body with only `coverUrl` changes just the
+  cover. `DELETE` on the same path forgets both. Either way the server rescans and
+  answers with the updated book, whose `updatedAt` has moved so devices pick it up.
 - Audio at `/audio/{bookId}/{index}` and covers at `/covers/{bookId}` need the bearer
   token and support ranges and `HEAD`.
 
