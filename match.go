@@ -395,6 +395,11 @@ func saveOverride(dataDir, id string, c MatchCandidate) error {
 	if len(out) == 0 {
 		return errNothingToKeep
 	}
+	// Edited chapters are kept separately (putChapters); details replace details only.
+	old := map[string]any{}
+	if readJSON(overridePath(dataDir, id), &old) == nil && old["chapters"] != nil {
+		out["chapters"] = old["chapters"]
+	}
 	return writeJSON(overridePath(dataDir, id), out)
 }
 
@@ -458,6 +463,11 @@ func (m *matcher) saveCover(dataDir, id, rawURL string) error {
 	if len(data) > 15<<20 {
 		return errors.New("cover is over 15 MB")
 	}
+	return saveCoverData(dataDir, id, data)
+}
+
+// saveCoverData keeps a picture as a book's cover, whatever its source.
+func saveCoverData(dataDir, id string, data []byte) error {
 	var ext string
 	switch http.DetectContentType(data) {
 	case "image/jpeg":

@@ -72,6 +72,21 @@ const ICONS = {
   tablet: "M21 4H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h18c1.1 0 1.99-.9 1.99-2L23 6c0-1.1-.9-2-2-2zm-2 14H5V6h14v12z",
   computer: "M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z",
   web: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z",
+  play: "M8 5v14l11-7z",
+  pause: "M6 19h4V5H6v14zm8-14v14h4V5h-4z",
+  replay: "M11.99 5V1l-5 5 5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6h-2c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z",
+  forward: "M18 13c0 3.31-2.69 6-6 6s-6-2.69-6-6 2.69-6 6-6v4l5-5-5-5v4c-4.42 0-8 3.58-8 8s3.58 8 8 8 8-3.58 8-8h-2z",
+  prev: "M6 6h2v12H6zm3.5 6l8.5 6V6z",
+  next: "M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z",
+  bookmark: "M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z",
+  timer: "M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0012 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z",
+  person: "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z",
+  build: "M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z",
+  history: "M13 3a9 9 0 00-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0013 21a9 9 0 000-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z",
+  settings: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z",
+  upload: "M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z",
+  image: "M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z",
+  warning: "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z",
   dark: "M12 3a9 9 0 109 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 01-4.4 2.26 5.403 5.403 0 01-3.14-9.8c-.44-.06-.9-.1-1.36-.1z",
   light: "M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0a.996.996 0 000-1.41l-1.06-1.06zm1.06-10.96a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z",
 };
@@ -91,8 +106,11 @@ function icon(name) {
 const iconBtn = (name, label, onclick, cls = "icon-btn") =>
   el("button", { class: cls, type: "button", title: label, "aria-label": label, onclick }, icon(name));
 
+// Held on to: an open sheet borrows it (see below), and reopening a sheet would
+// otherwise take it out of the page.
+const toastEl = document.getElementById("toast");
 function toast(msg) {
-  const t = document.getElementById("toast");
+  const t = toastEl;
   // An open sheet sits in the top layer; the toast goes with it so it shows above the scrim.
   (dialog.open ? dialog : document.body).append(t);
   t.textContent = msg;
@@ -274,8 +292,12 @@ const VIEWS = [
   { id: "library", label: "Library", icon: "library" },
   { id: "stats", label: "Listening", icon: "stats" },
   { id: "devices", label: "Devices", icon: "devices" },
+  { id: "account", label: "Account", icon: "person" },
   { id: "libraries", label: "Libraries", icon: "folder", admin: true },
+  { id: "maintenance", label: "Maintenance", icon: "build", admin: true },
+  { id: "activity", label: "Activity", icon: "history", admin: true },
   { id: "users", label: "Users", icon: "users", admin: true },
+  { id: "settings", label: "Settings", icon: "settings", admin: true },
 ];
 
 function renderShell(current) {
@@ -311,6 +333,7 @@ function renderShell(current) {
 }
 
 async function signOut() {
+  stopPlayer();
   try { await api("/api/auth/logout", { method: "POST" }); } catch { /* signed out regardless */ }
   forgetToken();
   renderSignIn();
@@ -328,7 +351,10 @@ async function render() {
   const { main, tools } = renderShell(current);
   main.append(el("p", { class: "muted" }, "Loading…"));
   try {
-    const view = { dashboard: viewDashboard, library: viewLibrary, stats: viewStats, devices: viewDevices, libraries: viewLibraries, users: viewUsers }[current.id];
+    const view = {
+      dashboard: viewDashboard, library: viewLibrary, stats: viewStats, devices: viewDevices, account: viewAccount,
+      libraries: viewLibraries, maintenance: viewMaintenance, activity: viewActivity, users: viewUsers, settings: viewSettings,
+    }[current.id];
     main.replaceChildren(...[await view(tools)].flat().filter(Boolean));
   } catch (e) {
     if (e.status !== 401) main.replaceChildren(el("p", { class: "err" }, e.message));
@@ -574,6 +600,7 @@ async function viewLibrary(tools) {
       shelf.replaceChildren(el("div", { class: "table-wrap" }, el("p", { class: "muted", style: "padding:24px;text-align:center" }, "Nothing matches.")));
       return;
     }
+    if (prefs.group === "series" || prefs.group === "authors") return shelf.replaceChildren(groupedShelf(shown, prefs.group));
     shelf.replaceChildren(prefs.layout === "grid" ? el("div", { class: "cover-grid" }, shown.map(bookTile)) : bookTable(shown));
   };
 
@@ -592,9 +619,16 @@ async function viewLibrary(tools) {
     onclick: () => { prefs.layout = id; savePrefs(); layoutBtns.forEach((b, j) => b.setAttribute("aria-pressed", i === j ? "true" : "false")); fill(); },
   }, icon(id)));
 
+  const groupBox = el("div", { class: "segmented", role: "group", "aria-label": "Browse by" });
+  const drawGroup = () => groupBox.replaceChildren(...[["books", "Books"], ["series", "Series"], ["authors", "Authors"]].map(([id, label]) =>
+    chip(label, (prefs.group || "books") === id, () => { prefs.group = id; savePrefs(); drawGroup(); layoutBtns.forEach((b) => { b.hidden = id !== "books"; }); fill(); })));
+  drawGroup();
+  layoutBtns.forEach((b) => { b.hidden = (prefs.group || "books") !== "books"; });
+
   fill();
   return [
     el("div", { class: "toolbar" },
+      groupBox,
       el("div", { class: "search" }, icon("search"), el("input", { type: "search", placeholder: "Search title, author, narrator, series", "aria-label": "Search", value: state.query,
         oninput: (e) => { state.query = e.target.value; fill(); } })),
       libSelect, sortSelect, layoutBtns),
@@ -657,6 +691,8 @@ function openBook(id, mode = "view") {
   if (!b) return;
   if (mode === "edit") return openSheet("Edit details · " + b.title, bookEditor(b), { onBack: () => openBook(id) });
   if (mode === "match") return openSheet("Find details · " + b.title, bookMatcher(b), { onBack: () => openBook(id), wide: true });
+  if (mode === "chapters") return openSheet("Chapters · " + b.title, chaptersSheet(b), { onBack: () => openBook(id) });
+  if (mode === "chapter-edit") return openSheet("Edit chapters · " + b.title, chapterEditor(b), { onBack: () => openBook(id, "chapters"), wide: true });
   openSheet(b.title, bookDetail(b), { wide: true });
 }
 
@@ -668,7 +704,12 @@ function currentChapter(b, p) {
 function bookDetail(b) {
   const p = progressOf(b);
   const size = b.files.reduce((n, f) => n + (f.sizeBytes || 0), 0);
-  const download = el("button", { class: "btn", type: "button", onclick: async () => {
+  const playing = player.book?.id === b.id;
+  const resumeAt = p && !p.finished && p.positionMs > 0;
+  const live = playing && !player.done; // loaded in the player and not run out
+  const play = el("button", { class: "btn", type: "button", onclick: () => live ? (player.audio.paused ? player.audio.play() : player.audio.pause()) : playBook(b.id, p?.finished ? 0 : undefined) },
+    icon(live && !player.audio.paused ? "pause" : "play"), live ? (player.audio.paused ? "Resume" : "Pause") : resumeAt ? `Resume at ${fmtClock(p.positionMs)}` : p?.finished ? "Play again" : "Play");
+  const download = el("button", { class: "btn secondary", type: "button", onclick: async () => {
     download.disabled = true;
     try {
       const link = await api(`/api/books/${encodeURIComponent(b.id)}/download-link`, { method: "POST" });
@@ -677,11 +718,16 @@ function bookDetail(b) {
     } catch (e) { toast(e.message); }
     download.disabled = false;
   } }, icon("download"), `Download (${fmtBytes(size)})`);
-  const actions = el("div", { class: "row", style: "margin-top:14px" }, download);
+  const actions = el("div", { class: "row", style: "margin-top:14px" }, play, download,
+    p?.finished ? el("button", { class: "btn secondary", type: "button", onclick: () => setProgress(b, false) }, icon("replay"), "Start over") :
+      el("button", { class: "btn secondary", type: "button", onclick: () => setProgress(b, true) }, icon("check"), "Mark finished"),
+    resumeAt ? el("button", { class: "btn ghost", type: "button", onclick: () => setProgress(b, false) }, "Start over") : null);
   if (isAdmin()) {
-    actions.append(
-      el("button", { class: "btn secondary", type: "button", onclick: () => openBook(b.id, "match") }, icon("magic"), "Find details"),
-      el("button", { class: "btn secondary", type: "button", onclick: () => openBook(b.id, "edit") }, icon("edit"), "Edit"));
+    actions.append(el("div", { class: "row", style: "flex-basis:100%;margin-top:2px" },
+      el("button", { class: "btn secondary small", type: "button", onclick: () => openBook(b.id, "match") }, icon("magic"), "Find details"),
+      el("button", { class: "btn secondary small", type: "button", onclick: () => openBook(b.id, "edit") }, icon("edit"), "Edit details"),
+      el("button", { class: "btn secondary small", type: "button", onclick: () => pickCover(b) }, icon("image"), "Change cover"),
+      el("button", { class: "btn secondary small", type: "button", onclick: () => openBook(b.id, "chapter-edit") }, icon("chapters"), "Edit chapters")));
   }
 
   const cur = currentChapter(b, p);
@@ -710,6 +756,7 @@ function bookDetail(b) {
       actions)),
     progress,
     b.description ? el("p", { class: "desc" }, b.description) : null,
+    bookmarksPanel(b),
     b.chapters.length ? el("details", { class: "panel" },
       el("summary", {}, icon("chapters"), span("strong grow", plural(b.chapters.length, "chapter")), cur >= 0 ? span("small muted", `on ${cur + 1}`) : null),
       el("div", { class: "lines" }, b.chapters.map((c, i) => el("div", { class: i === cur ? "now" : "" },
@@ -941,7 +988,10 @@ async function viewDevices(tools, who = state.me.name) {
 
 async function viewLibraries(tools) {
   const { libraries: libs } = await api("/api/libraries");
-  tools.append(el("button", { class: "btn small", type: "button", onclick: () => addLibrarySheet() }, icon("add"), "Add library"));
+  state.libraries = libs;
+  tools.append(
+    libs.length ? el("button", { class: "btn secondary small", type: "button", onclick: () => uploadSheet(libs[0].name) }, icon("upload"), "Upload") : null,
+    el("button", { class: "btn small", type: "button", onclick: () => addLibrarySheet() }, icon("add"), "Add library"));
   const remove = async (l) => {
     if (!confirm(`Remove ${l.name}? Its books disappear from the server and every device. The files stay where they are, and adding the folder back brings the books and everyone's places back.`)) return;
     try {
@@ -960,7 +1010,9 @@ async function viewLibraries(tools) {
         el("td", { class: "c-num" }, l.books),
         el("td", { class: "c-num" }, fmtDuration(l.durationMs)),
         el("td", { class: "hide-sm muted" }, l.fixed ? "Command line" : "Added here"),
-        el("td", { class: "c-num" }, l.fixed ? null : el("button", { class: "btn danger small", type: "button", onclick: () => remove(l) }, "Remove")))))) :
+        el("td", { class: "c-num" }, el("div", { class: "row end", style: "flex-wrap:nowrap" },
+          el("button", { class: "btn secondary small", type: "button", onclick: () => uploadSheet(l.name) }, icon("upload"), "Upload"),
+          l.fixed ? null : el("button", { class: "btn danger small", type: "button", onclick: () => remove(l) }, "Remove"))))))) :
       el("div", { style: "padding:24px;text-align:center" }, el("p", { class: "muted" }, "No libraries yet."),
         el("div", { style: "margin-top:12px" }, el("button", { class: "btn", type: "button", onclick: () => addLibrarySheet() }, icon("add"), "Add library")))),
     el("p", { class: "tiny muted", style: "margin-top:10px" },
@@ -1078,10 +1130,687 @@ function userSheet(u, libraries) {
   openSheet(editing ? "Edit User · " + u.name : "Add User", [form]);
 }
 
+// ------------------------------------------------------------------ player
+
+// One <audio> element plays the book's files in turn; positions are on the book's
+// combined timeline, as everywhere else. Progress is saved the way the apps save it:
+// on pause, when the tab is hidden, and every 30 seconds while playing.
+const player = {
+  audio: new Audio(),
+  book: null,
+  files: [], // { url, start, durationMs }
+  index: -1,
+  pendingSeek: null,
+  saveAt: 0,
+  sleepAt: 0, // epoch ms, or -1 for the end of the chapter
+  done: false, // the book ran to its end: later saves keep it finished
+  bar: null,
+};
+player.audio.preload = "auto";
+
+function playerPosition() {
+  const f = player.files[player.index];
+  return f ? f.start + Math.round(player.audio.currentTime * 1000) : 0;
+}
+
+function fileAt(ms) {
+  let i = player.files.findIndex((f) => ms < f.start + f.durationMs);
+  if (i < 0) i = player.files.length - 1;
+  return i;
+}
+
+function seekTo(ms, autoplay = !player.audio.paused) {
+  if (!player.book) return;
+  ms = Math.max(0, Math.min(ms, player.book.durationMs - 250));
+  player.done = false;
+  const i = fileAt(ms);
+  const offset = (ms - player.files[i].start) / 1000;
+  if (i !== player.index) {
+    player.index = i;
+    player.pendingSeek = offset;
+    player.audio.src = player.files[i].url;
+    player.audio.load();
+  } else {
+    player.audio.currentTime = offset;
+  }
+  if (autoplay) player.audio.play().catch(() => {});
+  drawPlayer();
+}
+
+async function playBook(id, atMs) {
+  const b = state.books.find((x) => x.id === id);
+  if (!b) return;
+  try {
+    if (player.book && player.book.id !== id) await saveProgress();
+    const link = await api(`/api/books/${encodeURIComponent(id)}/stream-link`, { method: "POST" });
+    let start = 0;
+    player.files = link.files.map((f) => { const out = { url: f.url, start, durationMs: f.durationMs }; start += f.durationMs; return out; });
+    player.book = b;
+    player.index = -1;
+    const p = progressOf(b);
+    const from = atMs ?? (p && !p.finished ? p.positionMs : 0);
+    player.audio.playbackRate = Number(state.prefs.speed || 1);
+    seekTo(from, true);
+    mediaSession();
+    dialog.open && dialog.close();
+  } catch (e) { toast(e.message); }
+}
+
+async function saveProgress({ finished = false, keepalive = false } = {}) {
+  const b = player.book;
+  if (!b) return;
+  finished = finished || player.done;
+  const pos = finished ? b.durationMs : playerPosition();
+  const body = { positionMs: pos, updatedAt: Date.now(), finished };
+  const speed = player.audio.playbackRate;
+  if (speed !== 1) body.speed = speed;
+  player.saveAt = Date.now();
+  try {
+    const res = await fetch(`/api/progress/${encodeURIComponent(b.id)}`, {
+      method: "PUT", keepalive,
+      headers: { Authorization: "Bearer " + state.token, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.ok || res.status === 409) state.progress.set(b.id, await res.json());
+  } catch { /* the next save catches up */ }
+}
+
+function currentChapterAt(b, ms) {
+  return b.chapters.findIndex((c) => ms >= c.startMs && ms < c.endMs);
+}
+
+function stopPlayer() {
+  if (!player.book) return;
+  saveProgress();
+  player.audio.pause();
+  player.audio.removeAttribute("src");
+  player.audio.load();
+  player.book = null;
+  player.index = -1;
+  player.sleepAt = 0;
+  drawPlayer();
+}
+
+player.audio.addEventListener("loadedmetadata", () => {
+  if (player.pendingSeek != null) { player.audio.currentTime = player.pendingSeek; player.pendingSeek = null; }
+});
+player.audio.addEventListener("ended", () => {
+  if (player.index + 1 < player.files.length) {
+    seekTo(player.files[player.index + 1].start, true);
+  } else {
+    player.done = true;
+    saveProgress({ finished: true });
+    toast(`Finished ${player.book.title}`);
+    drawPlayer();
+  }
+});
+player.audio.addEventListener("pause", () => { if (!player.audio.ended) saveProgress(); drawPlayer(); });
+player.audio.addEventListener("play", () => drawPlayer());
+player.audio.addEventListener("error", () => { if (player.book) toast("This file could not be played in the browser"); });
+player.audio.addEventListener("timeupdate", () => {
+  if (!player.book) return;
+  const pos = playerPosition();
+  if (!player.audio.paused && Date.now() - player.saveAt > 30000) saveProgress();
+  if (player.sleepAt > 0 && Date.now() >= player.sleepAt) { player.sleepAt = 0; player.audio.pause(); toast("Sleep timer: paused"); }
+  if (player.sleepAt === -1) {
+    const c = player.book.chapters[currentChapterAt(player.book, pos)];
+    if (c && pos >= c.endMs - 400) { player.sleepAt = 0; player.audio.pause(); toast("Sleep timer: end of chapter"); }
+  }
+  updatePlayerTime();
+});
+document.addEventListener("visibilitychange", () => { if (document.hidden && player.book) saveProgress({ keepalive: true }); });
+window.addEventListener("pagehide", () => { if (player.book) saveProgress({ keepalive: true }); });
+
+function skip(sec) { seekTo(playerPosition() + sec * 1000); }
+function chapterJump(dir) {
+  const b = player.book;
+  if (!b?.chapters.length) return skip(dir * 30);
+  const pos = playerPosition();
+  let i = currentChapterAt(b, pos);
+  if (dir < 0 && i >= 0 && pos - b.chapters[i].startMs > 3000) return seekTo(b.chapters[i].startMs);
+  i = Math.max(0, Math.min(b.chapters.length - 1, i + dir));
+  seekTo(b.chapters[i].startMs);
+}
+
+function mediaSession() {
+  if (!("mediaSession" in navigator) || !player.book) return;
+  const b = player.book;
+  const art = coverCache.get(b.coverUrl + "?v=" + b.updatedAt);
+  navigator.mediaSession.metadata = new MediaMetadata({ title: b.title, artist: b.author || "", album: b.series || "", artwork: art ? [{ src: art }] : [] });
+  const h = {
+    play: () => player.audio.play(), pause: () => player.audio.pause(),
+    seekbackward: () => skip(-30), seekforward: () => skip(30),
+    previoustrack: () => chapterJump(-1), nexttrack: () => chapterJump(1),
+    seekto: (d) => seekTo(d.seekTime * 1000),
+  };
+  for (const [k, f] of Object.entries(h)) { try { navigator.mediaSession.setActionHandler(k, f); } catch { /* not supported */ } }
+}
+
+const SPEEDS = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5];
+
+function drawPlayer() {
+  if (!player.bar) {
+    player.bar = el("div", { class: "player", id: "player" });
+    document.body.append(player.bar);
+  }
+  document.body.classList.toggle("playing", !!player.book);
+  const b = player.book;
+  if (!b) { player.bar.replaceChildren(); return; }
+  const scrub = el("input", { type: "range", class: "scrub", min: 0, max: b.durationMs, step: 1000, value: playerPosition(), "aria-label": "Position",
+    oninput: (e) => { scrub.dataset.dragging = "1"; times.firstChild.textContent = fmtClock(Number(e.target.value)); },
+    onchange: (e) => { delete scrub.dataset.dragging; seekTo(Number(e.target.value)); } });
+  const times = el("div", { class: "times tiny muted" }, span("", ""), span("", ""));
+  const chapter = el("div", { class: "small muted clip", id: "player-chapter" });
+  const speed = el("select", { "aria-label": "Speed", class: "mini-select", onchange: (e) => {
+    player.audio.playbackRate = Number(e.target.value); state.prefs.speed = e.target.value; savePrefs();
+  } }, SPEEDS.map((v) => el("option", { value: v, selected: player.audio.playbackRate === v ? true : null }, v + "×")));
+  const sleep = el("select", { "aria-label": "Sleep timer", class: "mini-select", onchange: (e) => {
+    const v = e.target.value;
+    player.sleepAt = v === "chapter" ? -1 : v === "0" ? 0 : Date.now() + Number(v) * 60000;
+    toast(v === "0" ? "Sleep timer off" : v === "chapter" ? "Pausing at the end of this chapter" : `Pausing in ${v} minutes`);
+  } }, [["0", "Sleep: off"], ["15", "15 min"], ["30", "30 min"], ["45", "45 min"], ["60", "60 min"], ["chapter", "End of chapter"]].map(([v, l]) =>
+    el("option", { value: v, selected: (player.sleepAt === -1 ? "chapter" : player.sleepAt > 0 ? null : "0") === v ? true : null }, l)));
+  player.bar.replaceChildren(
+    el("button", { class: "p-cover", type: "button", title: "Open book", onclick: () => openBook(b.id) }, cover(b)),
+    el("div", { class: "p-info" }, el("div", { class: "strong clip" }, b.title), chapter),
+    el("div", { class: "p-controls" },
+      iconBtn("prev", "Previous chapter", () => chapterJump(-1)),
+      iconBtn("replay", "Back 30 seconds", () => skip(-30)),
+      el("button", { class: "p-play", type: "button", "aria-label": player.audio.paused ? "Play" : "Pause", onclick: () => player.audio.paused ? player.audio.play() : player.audio.pause() },
+        icon(player.audio.paused ? "play" : "pause")),
+      iconBtn("forward", "Forward 30 seconds", () => skip(30)),
+      iconBtn("next", "Next chapter", () => chapterJump(1))),
+    el("div", { class: "p-track" }, scrub, times),
+    el("div", { class: "p-extra" },
+      speed, sleep,
+      iconBtn("bookmark", "Add a bookmark here", () => addBookmark(b, playerPosition())),
+      iconBtn("chapters", "Chapters", () => openBook(b.id, "chapters")),
+      iconBtn("close", "Stop", stopPlayer)));
+  player.scrub = scrub;
+  player.times = times;
+  player.chapter = chapter;
+  updatePlayerTime();
+}
+
+function updatePlayerTime() {
+  const b = player.book;
+  if (!b || !player.scrub) return;
+  const pos = playerPosition();
+  if (!player.scrub.dataset.dragging) player.scrub.value = pos;
+  player.scrub.style.setProperty("--fill", ((pos / b.durationMs) * 100).toFixed(2) + "%");
+  player.times.firstChild.textContent = fmtClock(pos);
+  player.times.lastChild.textContent = "-" + fmtClock(b.durationMs - pos);
+  const i = currentChapterAt(b, pos);
+  player.chapter.textContent = i >= 0 ? `${b.chapters[i].title} · ${i + 1} of ${b.chapters.length}` : `${fmtDuration(b.durationMs - pos)} left`;
+}
+
+// ------------------------------------------------------------------ progress and bookmarks
+
+async function setProgress(b, finished) {
+  if (player.book?.id === b.id) {
+    if (finished) { player.done = true; player.audio.pause(); } else seekTo(0, false);
+  }
+  try {
+    const p = await api(`/api/progress/${encodeURIComponent(b.id)}`, { method: "PUT", body: { positionMs: finished ? b.durationMs : 0, updatedAt: Date.now(), finished } });
+    state.progress.set(b.id, p);
+    toast(finished ? "Marked finished" : "Back to the start");
+    openBook(b.id);
+    if (state.view === "library" || state.view === "dashboard") refreshMain(state.view === "library" ? viewLibrary : viewDashboard);
+  } catch (e) { toast(e.message); }
+}
+
+let bookmarkCache = null;
+async function bookmarksFor(bookId) {
+  if (!bookmarkCache) bookmarkCache = (await api("/api/bookmarks")).bookmarks;
+  return bookmarkCache.filter((m) => m.bookId === bookId).sort((a, c) => a.positionMs - c.positionMs);
+}
+
+async function addBookmark(b, positionMs) {
+  const label = prompt(`Bookmark at ${fmtClock(positionMs)}: a note (optional)`, "");
+  if (label === null) return;
+  try {
+    const m = await api(`/api/bookmarks/${encodeURIComponent(b.id)}`, { method: "POST", body: { positionMs, label: label.trim(), createdAt: Date.now() } });
+    bookmarkCache?.push(m);
+    toast("Bookmark added");
+    if (dialog.open) openBook(b.id);
+  } catch (e) { toast(e.message); }
+}
+
+async function deleteBookmark(b, m) {
+  try {
+    await api(`/api/bookmarks/${encodeURIComponent(b.id)}/${encodeURIComponent(m.id)}`, { method: "DELETE" });
+    bookmarkCache = bookmarkCache?.filter((x) => x.id !== m.id) || null;
+    openBook(b.id);
+  } catch (e) { toast(e.message); }
+}
+
+function bookmarksPanel(b) {
+  const box = el("div", { class: "lines" }, el("div", {}, span("muted", "Loading…")));
+  bookmarksFor(b.id).then((list) => {
+    box.replaceChildren(...(list.length ? list.map((m) => el("div", {},
+      el("button", { class: "linkish", type: "button", title: "Play from here", onclick: () => playBook(b.id, m.positionMs) }, span("n mono", fmtClock(m.positionMs))),
+      span("t", m.label || span("muted", "No note")),
+      span("end", fmtDate(m.createdAt)),
+      el("button", { class: "icon-btn sm", type: "button", title: "Delete bookmark", "aria-label": "Delete bookmark", onclick: () => deleteBookmark(b, m) }, icon("remove")))) :
+      [el("div", {}, span("muted", "No bookmarks yet. Add one from the player, or in the apps."))]));
+  }).catch((e) => box.replaceChildren(el("div", {}, span("err", e.message))));
+  return el("details", { class: "panel", open: true },
+    el("summary", {}, icon("bookmark"), span("strong grow", "Bookmarks")), box);
+}
+
+// ------------------------------------------------------------------ chapters (the player's list, and the admin editor)
+
+function chaptersSheet(b) {
+  const now = player.book?.id === b.id ? currentChapterAt(b, playerPosition()) : currentChapter(b, progressOf(b));
+  return [
+    b.chapters.length ? el("div", { class: "lines" }, b.chapters.map((c, i) => el("div", { class: i === now ? "now" : "" },
+      el("button", { class: "linkish", type: "button", title: "Play from here", onclick: () => playBook(b.id, c.startMs) }, span("n", i + 1)),
+      el("button", { class: "linkish t", type: "button", onclick: () => playBook(b.id, c.startMs) }, c.title),
+      span("end", fmtClock(c.startMs))))) : el("p", { class: "muted" }, "This book has no chapters."),
+    isAdmin() ? el("div", { class: "row end" }, el("button", { class: "btn secondary", type: "button", onclick: () => openBook(b.id, "chapter-edit") }, icon("edit"), "Edit chapters")) : null,
+  ];
+}
+
+const parseClock = (s) => {
+  const parts = String(s).trim().split(":").map(Number);
+  if (!parts.length || parts.some((n) => !Number.isFinite(n) || n < 0)) return NaN;
+  return Math.round(parts.reduce((t, n) => t * 60 + n, 0) * 1000);
+};
+
+function chapterEditor(b) {
+  const rows = el("div", { class: "stack" });
+  const add = (title, startMs) => {
+    const t = el("input", { type: "text", value: title, "aria-label": "Title" });
+    const at = el("input", { type: "text", class: "mono", value: fmtClock(startMs), "aria-label": "Start", style: "width:110px" });
+    const row = el("div", { class: "row", style: "flex-wrap:nowrap" },
+      el("div", { class: "grow" }, t), at,
+      player.book?.id === b.id ? iconBtn("timer", "Use the player's position", () => { at.value = fmtClock(playerPosition()); }) : null,
+      iconBtn("play", "Play from here", () => { const ms = parseClock(at.value); if (Number.isFinite(ms)) playBook(b.id, ms); }),
+      iconBtn("remove", "Remove", () => row.remove()));
+    row._get = () => ({ title: t.value, startMs: parseClock(at.value) });
+    rows.append(row);
+  };
+  b.chapters.forEach((c) => add(c.title, c.startMs));
+  if (!b.chapters.length) add("Chapter 1", 0);
+  const save = el("button", { class: "btn", type: "button", onclick: async () => {
+    const list = [...rows.children].map((r) => r._get());
+    const bad = list.findIndex((c) => !Number.isFinite(c.startMs));
+    if (bad >= 0) { toast(`Chapter ${bad + 1}: write the start as h:mm:ss`); return; }
+    save.disabled = true;
+    try {
+      const updated = await api(`/api/books/${encodeURIComponent(b.id)}/chapters`, { method: "PUT", body: { chapters: list } });
+      replaceBook(updated); toast("Chapters saved"); openBook(b.id, "chapters");
+    } catch (e) { toast(e.message); save.disabled = false; }
+  } }, "Save chapters");
+  return [
+    el("p", { class: "small muted" }, "Titles and start times (h:mm:ss, on the whole book's timeline). Each chapter ends where the next begins. Saved with the book's details on the server; apps get them on their next sync."),
+    rows,
+    el("div", { class: "row" },
+      el("button", { class: "btn secondary", type: "button", onclick: () => {
+        const last = [...rows.children].pop()?._get();
+        add(`Chapter ${rows.children.length + 1}`, player.book?.id === b.id ? playerPosition() : Math.min(b.durationMs - 1000, (last?.startMs || 0) + 600000));
+      } }, icon("add"), "Add chapter"),
+      el("button", { class: "btn danger", type: "button", onclick: async () => {
+        if (!confirm("Go back to the chapters read from the files?")) return;
+        try { const updated = await api(`/api/books/${encodeURIComponent(b.id)}/chapters`, { method: "PUT", body: { chapters: [] } }); replaceBook(updated); toast("Back to the files' chapters"); openBook(b.id, "chapters"); }
+        catch (e) { toast(e.message); }
+      } }, "Use the files' chapters"),
+      el("span", { class: "grow" }),
+      el("button", { class: "btn secondary", type: "button", onclick: () => openBook(b.id, "chapters") }, "Cancel"),
+      save),
+  ];
+}
+
+// ------------------------------------------------------------------ covers (admin)
+
+function pickCover(b) {
+  const input = el("input", { type: "file", accept: "image/jpeg,image/png,image/webp", style: "display:none", onchange: async () => {
+    const file = input.files[0];
+    input.remove();
+    if (!file) return;
+    try {
+      const res = await fetch(`/api/books/${encodeURIComponent(b.id)}/cover`, { method: "PUT", headers: { Authorization: "Bearer " + state.token }, body: file });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error || res.statusText);
+      replaceBook(out); toast("Cover changed"); openBook(b.id);
+    } catch (e) { toast(e.message); }
+  } });
+  document.body.append(input);
+  input.click();
+}
+
+// ------------------------------------------------------------------ series and authors
+
+function groupedShelf(books, by) {
+  const groups = new Map();
+  for (const b of books) {
+    const keys = by === "series" ? (b.series ? [b.series] : []) : (b.author ? b.author.split(",").map((a) => a.trim()).filter(Boolean) : ["Unknown author"]);
+    for (const k of keys) {
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(b);
+    }
+  }
+  const names = [...groups.keys()].sort((a, c) => a.localeCompare(c, undefined, { sensitivity: "base" }));
+  if (!names.length) return el("div", { class: "table-wrap" }, el("p", { class: "muted", style: "padding:24px;text-align:center" }, by === "series" ? "No series yet. Series come from tags, folder names (Author/Series/Book) or saved details." : "No authors."));
+  return el("div", { class: "groups" }, names.map((name) => {
+    const list = groups.get(name).sort(by === "series" ? (a, c) => (a.seriesIndex ?? 1e9) - (c.seriesIndex ?? 1e9) || byTitle(a, c) : byTitle);
+    const total = list.reduce((n, b) => n + b.durationMs, 0);
+    const done = list.filter((b) => statusOf(b) === "finished").length;
+    return el("section", { class: "group-sec" },
+      el("div", { class: "group-head" }, el("h2", {}, name), span("small muted", `${plural(list.length, "book")} · ${fmtDuration(total)}${done ? ` · ${done} finished` : ""}`)),
+      el("div", { class: "cover-grid" }, list.map(bookTile)));
+  }));
+}
+
+// ------------------------------------------------------------------ account
+
+async function viewAccount() {
+  const me = await api("/api/me");
+  const cur = el("input", { type: "password", autocomplete: "current-password", required: true });
+  const nw = el("input", { type: "password", autocomplete: "new-password", minlength: 8, required: true });
+  const again = el("input", { type: "password", autocomplete: "new-password", minlength: 8, required: true });
+  const pw = el("form", { class: "form", onsubmit: async (ev) => {
+    ev.preventDefault();
+    if (nw.value !== again.value) { toast("The new passwords don't match"); return; }
+    try {
+      const out = await api("/api/me/password", { method: "PUT", body: { current: cur.value, new: nw.value } });
+      const remembered = !!storage()?.getItem(TOKEN_KEY);
+      saveToken(out.token, remembered);
+      toast("Password changed. Your other devices will ask for it again.");
+      pw.reset();
+    } catch (e) { toast(e.status === 429 ? "Too many wrong passwords. Try again later." : e.message); }
+  } },
+  el("label", { class: "field" }, el("span", {}, "Current password"), cur),
+  el("label", { class: "field" }, el("span", {}, "New password (8 or more characters)"), nw),
+  el("label", { class: "field" }, el("span", {}, "New password again"), again),
+  el("div", { class: "wide row end" }, el("button", { class: "btn", type: "submit" }, "Change password")));
+
+  const everywhere = el("button", { class: "btn danger", type: "button", onclick: async () => {
+    if (!confirm("Sign out every other device? They will ask for the password again.")) return;
+    try {
+      const { devices } = await api("/api/devices");
+      for (const d of devices.filter((x) => !x.current)) await api("/api/devices/" + encodeURIComponent(d.id), { method: "DELETE" });
+      toast("Other devices signed out");
+    } catch (e) { toast(e.message); }
+  } }, "Sign out other devices");
+
+  return el("div", { class: "widgets" },
+    widget("Profile", {
+      visual: [el("span", { class: "avatar", style: "width:64px;height:64px;font-size:26px" }, me.name.slice(0, 1)), span("strong", me.name)],
+      overview: kv([["Username", me.name], ["Role", me.role === "admin" ? "Administrator" : "Listener"], ["Libraries", me.role === "admin" || !me.libraries?.length ? "All" : me.libraries.join(", ")], ["Devices", me.devices]]),
+    }),
+    widget("Appearance", { body: [
+      el("div", { class: "segmented" }, [["dark", "Dark"], ["light", "Light"]].map(([id, label]) =>
+        chip(label, (state.prefs.theme || "dark") === id, () => { state.prefs.theme = id; savePrefs(); applyTheme(); render(); }))),
+      el("p", { class: "small muted", style: "margin-top:10px" }, "Kept in this browser."),
+    ] }),
+    widget("Password", { wide: true, body: [pw, el("p", { class: "tiny muted", style: "margin-top:8px" }, "Changing it signs out your other devices; this browser stays signed in.")] }),
+    widget("Devices", { body: [el("p", { class: "small muted" }, "Lost a phone? Sign it out here, or pick it on the Devices page."), el("div", { style: "margin-top:12px" }, everywhere)] }));
+}
+
+// ------------------------------------------------------------------ upload (admin)
+
+function uploadSheet(libName) {
+  const libs = state.libraries.length ? state.libraries : [];
+  const lib = el("select", {}, libs.map((l) => el("option", { value: l.name, selected: l.name === libName ? true : null }, l.name)));
+  const folder = el("input", { type: "text", placeholder: "Author/Title (leave empty to keep the folders you pick)" });
+  const list = el("div", { class: "uploads" });
+  let queue = [];
+  const addFiles = (items) => {
+    for (const { file, rel } of items) {
+      const row = el("div", { class: "up-row" }, span("clip grow small", rel), span("tiny muted", fmtBytes(file.size)), el("div", { class: "progress" }, el("i", { style: "width:0%" })));
+      queue.push({ file, rel, row });
+      list.append(row);
+    }
+    go.disabled = !queue.length;
+    go.lastChild.textContent = `Upload ${plural(queue.length, "file")}`;
+  };
+  const filesIn = el("input", { type: "file", multiple: true, style: "display:none", onchange: () => addFiles([...filesIn.files].map((f) => ({ file: f, rel: f.name }))) });
+  const dirIn = el("input", { type: "file", multiple: true, webkitdirectory: true, style: "display:none", onchange: () => addFiles([...dirIn.files].map((f) => ({ file: f, rel: f.webkitRelativePath || f.name }))) });
+  const drop = el("div", { class: "drop", tabindex: 0,
+    ondragover: (e) => { e.preventDefault(); drop.classList.add("over"); },
+    ondragleave: () => drop.classList.remove("over"),
+    ondrop: async (e) => { e.preventDefault(); drop.classList.remove("over"); addFiles(await droppedFiles(e.dataTransfer)); } },
+    icon("upload"), el("div", { class: "strong" }, "Drop audiobook folders or files here"),
+    el("div", { class: "row", style: "justify-content:center" },
+      el("button", { class: "btn secondary small", type: "button", onclick: () => dirIn.click() }, "Choose a folder"),
+      el("button", { class: "btn secondary small", type: "button", onclick: () => filesIn.click() }, "Choose files")),
+    filesIn, dirIn);
+  const go = el("button", { class: "btn", type: "button", disabled: true, onclick: async () => {
+    go.disabled = true;
+    const prefix = folder.value.trim().replace(/^\/+|\/+$/g, "");
+    let ok = 0, failed = 0;
+    for (const item of queue) {
+      const dest = (prefix ? prefix + "/" : "") + item.rel;
+      try { await uploadOne(lib.value, dest, item.file, item.row.querySelector(".progress > i")); ok++; item.row.classList.add("ok"); }
+      catch (e) { failed++; item.row.append(span("tiny err", e.message)); }
+    }
+    queue = [];
+    try { await api("/api/rescan", { method: "POST" }); } catch { /* the periodic scan will */ }
+    toast(`${plural(ok, "file")} uploaded${failed ? `, ${failed} failed` : ""}`);
+    if (!failed) { dialog.close(); render(); }
+  } }, icon("upload"), span("", "Upload"));
+  openSheet("Upload audiobooks", [
+    el("div", { class: "form" },
+      el("label", { class: "field" }, el("span", {}, "Library"), lib),
+      el("label", { class: "field" }, el("span", {}, "Into folder"), folder)),
+    drop, list,
+    el("p", { class: "tiny muted" }, "Audio, cover pictures and metadata files (.opf, metadata.json, desc.txt) are accepted. Existing files are not overwritten. The library is rescanned when the upload is done."),
+    el("div", { class: "row end" }, el("button", { class: "btn secondary", type: "button", onclick: () => dialog.close() }, "Close"), go),
+  ]);
+}
+
+// droppedFiles walks dropped folders (DataTransfer entries) into files with their paths.
+async function droppedFiles(dt) {
+  const out = [];
+  const walk = (entry, prefix) => new Promise((resolve) => {
+    if (entry.isFile) entry.file((f) => { out.push({ file: f, rel: prefix + f.name }); resolve(); }, resolve);
+    else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const all = [];
+      const read = () => reader.readEntries(async (batch) => {
+        if (batch.length) { all.push(...batch); read(); }
+        else { for (const e of all) await walk(e, prefix + entry.name + "/"); resolve(); }
+      }, resolve);
+      read();
+    } else resolve();
+  });
+  const entries = [...dt.items].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
+  if (!entries.length) return [...dt.files].map((f) => ({ file: f, rel: f.name }));
+  for (const e of entries) await walk(e, "");
+  return out;
+}
+
+// uploadOne sends a file with progress (fetch cannot report upload progress).
+function uploadOne(library, rel, file, bar) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", `/api/libraries/${encodeURIComponent(library)}/files?path=${encodeURIComponent(rel)}`);
+    xhr.setRequestHeader("Authorization", "Bearer " + state.token);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && bar) bar.style.width = ((e.loaded / e.total) * 100).toFixed(1) + "%"; };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) { if (bar) bar.style.width = "100%"; resolve(); }
+      else { let msg = xhr.statusText; try { msg = JSON.parse(xhr.responseText).error || msg; } catch { /* plain */ } reject(new Error(msg)); }
+    };
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.send(file);
+  });
+}
+
+// ------------------------------------------------------------------ maintenance (admin)
+
+async function viewMaintenance(tools) {
+  const [{ problems }] = await Promise.all([api("/api/problems"), loadLibrary()]);
+  const gaps = (b) => [!b.coverUrl && "cover", !b.author && "author", !b.description && "description", !b.narrator && "narrator"].filter(Boolean);
+  const lacking = state.books.filter((b) => gaps(b).length).sort(byTitle);
+
+  const provider = el("select", { "aria-label": "Provider", style: "width:auto" },
+    [["audible", "Audible"], ["openlibrary", "Open Library"], ["google", "Google Books"]].map(([v, l]) => el("option", { value: v }, "Source: " + l)));
+  const rows = new Map();
+  const tbody = el("tbody", {}, lacking.map((b) => {
+    const pick = el("input", { type: "checkbox", checked: true, "aria-label": "Include " + b.title });
+    const found = el("td", { class: "muted small" }, "—");
+    const use = el("input", { type: "checkbox", disabled: true, "aria-label": "Use this match" });
+    rows.set(b.id, { b, pick, found, use, match: null });
+    return el("tr", { style: "cursor:default" },
+      el("td", { style: "width:32px" }, pick),
+      el("td", { class: "c-cover" }, cover(b)),
+      el("td", {}, el("div", { class: "strong clip2" }, b.title), el("div", { class: "small muted" }, b.author || "Unknown author")),
+      el("td", { class: "hide-sm" }, gaps(b).map((g) => el("span", { class: "tag", style: "margin:0 4px 4px 0" }, "no " + g))),
+      found, el("td", { style: "width:40px" }, use));
+  }));
+  const status = span("small muted grow", "");
+  const find = el("button", { class: "btn", type: "button", onclick: async () => {
+    find.disabled = true;
+    const todo = [...rows.values()].filter((r) => r.pick.checked);
+    let n = 0;
+    for (const r of todo) {
+      status.textContent = `Searching ${++n} of ${todo.length}…`;
+      r.found.textContent = "Searching…";
+      try {
+        const q = new URLSearchParams({ provider: provider.value, title: r.b.title, author: (r.b.author || "").split(",")[0] });
+        const { results } = await api(`/api/books/${encodeURIComponent(r.b.id)}/match?` + q);
+        const best = results[0];
+        r.match = best || null;
+        r.found.replaceChildren(best ? el("div", { class: "row", style: "flex-wrap:nowrap" },
+          best.coverUrl ? el("img", { src: best.coverUrl, alt: "", referrerpolicy: "no-referrer", style: "width:36px;height:36px;border-radius:3px;object-fit:cover" }) : null,
+          el("div", { style: "min-width:0" }, el("div", { class: "clip" }, best.title), el("div", { class: "tiny muted clip" }, (best.authors || []).join(", "), best.narrators?.length ? " · " + best.narrators.join(", ") : ""))) :
+          span("muted", "Nothing found"));
+        r.use.disabled = !best;
+        r.use.checked = !!best && similar(best.title, r.b.title);
+      } catch (e) { r.found.replaceChildren(span("err small", e.message)); }
+      await new Promise((ok) => setTimeout(ok, 350)); // gentle on the provider
+    }
+    status.textContent = "Tick the matches to keep, then apply.";
+    find.disabled = false;
+    apply.disabled = false;
+  } }, icon("magic"), "Find matches");
+  const apply = el("button", { class: "btn secondary", type: "button", disabled: true, onclick: async () => {
+    const chosen = [...rows.values()].filter((r) => r.use.checked && r.match);
+    if (!chosen.length) { toast("Nothing ticked"); return; }
+    apply.disabled = true;
+    let n = 0, failed = 0;
+    for (const r of chosen) {
+      status.textContent = `Saving ${++n} of ${chosen.length}…`;
+      try { await api(`/api/books/${encodeURIComponent(r.b.id)}/metadata?rescan=0`, { method: "PUT", body: r.match }); }
+      catch { failed++; }
+    }
+    await api("/api/rescan", { method: "POST" }).catch(() => {});
+    toast(`Saved ${chosen.length - failed} of ${chosen.length}`);
+    render();
+  } }, icon("check"), "Apply ticked");
+
+  return [
+    el("section", { class: "widget", style: "margin-bottom:12px" },
+      el("div", { class: "w-head" }, el("h2", {}, `Scan problems (${problems.length})`)),
+      problems.length ? el("table", { class: "grid" },
+        el("thead", {}, el("tr", {}, el("th", {}, "Library"), el("th", {}, "Path"), el("th", {}, "Problem"))),
+        el("tbody", {}, problems.map((p) => el("tr", { style: "cursor:default" },
+          el("td", {}, p.library), el("td", { class: "mono small" }, p.path), el("td", { class: "err small" }, p.error))))) :
+        el("p", { class: "muted", style: "padding:14px" }, "The last scan used everything it found.")),
+    el("section", { class: "widget" },
+      el("div", { class: "w-head" }, el("h2", {}, `Books missing details (${lacking.length})`)),
+      lacking.length ? [
+        el("div", { class: "toolbar", style: "padding:12px 14px 0" }, provider, find, apply, status),
+        el("table", { class: "grid" },
+          el("thead", {}, el("tr", {}, el("th", {}), el("th", { class: "c-cover" }), el("th", {}, "Book"), el("th", { class: "hide-sm" }, "Missing"), el("th", {}, "Best match"), el("th", {}, "Use"))),
+          tbody),
+      ] : el("p", { class: "muted", style: "padding:14px" }, "Every book has a cover, an author, a narrator and a description.")),
+  ];
+}
+
+// similar: a match whose title shares most words with the book's is probably right.
+function similar(a, b) {
+  const words = (s) => new Set(String(s).toLowerCase().replace(/[^\p{L}\p{N} ]/gu, " ").split(/\s+/).filter((w) => w.length > 2));
+  const x = words(a), y = words(b);
+  if (!x.size || !y.size) return false;
+  let both = 0;
+  for (const w of y) if (x.has(w)) both++;
+  return both / y.size >= 0.6;
+}
+
+// ------------------------------------------------------------------ settings (admin)
+
+async function viewSettings() {
+  const st = await api("/api/settings");
+  const name = el("input", { type: "text", value: st.saved.name || "", placeholder: st.defaults.name, maxlength: 80 });
+  const every = el("input", { type: "number", min: 0, max: 10080, value: st.saved.rescanMinutes ?? "", placeholder: String(st.defaults.rescanMinutes) });
+  const form = el("form", { class: "form", onsubmit: async (ev) => {
+    ev.preventDefault();
+    const body = {};
+    if (name.value.trim()) body.name = name.value.trim();
+    if (every.value !== "") body.rescanMinutes = Number(every.value);
+    try {
+      await api("/api/settings", { method: "PUT", body });
+      state.server = await api("/api/health");
+      document.title = `${state.server.name} · Kithara`;
+      toast("Settings saved");
+      render();
+    } catch (e) { toast(e.message); }
+  } },
+  el("label", { class: "field" }, el("span", {}, "Server name (shown in the apps)"), name),
+  el("label", { class: "field" }, el("span", {}, "Rescan every (minutes, 0 = never)"), every),
+  el("p", { class: "wide tiny muted" }, `Empty fields use the server's command line: “${st.defaults.name}”, every ${st.defaults.rescanMinutes} minutes. Changes take effect at once.`),
+  el("div", { class: "wide row end" }, el("button", { class: "btn", type: "submit" }, "Save")));
+
+  const dl = el("button", { class: "btn", type: "button", onclick: async () => {
+    dl.disabled = true;
+    try {
+      const res = await api("/api/backup", { raw: true });
+      if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+      const url = URL.createObjectURL(await res.blob());
+      const a = el("a", { href: url, download: `kithara-backup-${new Date().toISOString().slice(0, 10)}.zip` });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) { toast(e.message); }
+    dl.disabled = false;
+  } }, icon("download"), "Download backup");
+
+  return el("div", { class: "widgets" },
+    widget("General", { wide: true, body: form }),
+    widget("Backup", { body: [
+      el("p", { class: "small" }, "Everything that can't be rebuilt from the audiobook folders: accounts, everyone's progress, bookmarks and listening history, added libraries, saved details and covers, and these settings."),
+      el("p", { class: "tiny muted", style: "margin:8px 0 12px" }, "It holds password hashes: keep it somewhere safe. To restore, unzip it into the data folder of a stopped server. Devices sign in again afterwards."),
+      dl] }));
+}
+
+// ------------------------------------------------------------------ activity (admin)
+
+async function viewActivity(tools, days = 30) {
+  const [act] = await Promise.all([api("/api/activity?days=" + days), state.books.length ? null : loadLibrary()]);
+  const title = (id) => state.books.find((b) => b.id === id)?.title || "A removed book";
+  tools.append(el("select", { "aria-label": "Period", style: "width:auto", onchange: (e) => refreshMain((t) => viewActivity(t, Number(e.target.value))) },
+    [[7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"], [365, "Last year"]].map(([v, l]) => el("option", { value: v, selected: v === days ? true : null }, l))));
+  return [
+    el("div", { class: "table-wrap", style: "margin-bottom:12px" }, el("table", { class: "grid" },
+      el("thead", {}, el("tr", {}, el("th", {}, "User"), el("th", { class: "c-num" }, "Listened"), el("th", { class: "c-num hide-sm" }, "Books"), el("th", { class: "c-num hide-sm" }, "Sessions"), el("th", {}, "Last listened"))),
+      el("tbody", {}, act.users.map((u) => el("tr", { style: "cursor:default" },
+        el("td", {}, el("span", { class: "row", style: "flex-wrap:nowrap" }, el("span", { class: "avatar", style: "width:26px;height:26px;font-size:12px" }, u.name.slice(0, 1)), span("strong", u.name))),
+        el("td", { class: "c-num" }, fmtDuration(u.listenedMs)),
+        el("td", { class: "c-num hide-sm" }, u.books),
+        el("td", { class: "c-num hide-sm" }, u.sessions),
+        el("td", { class: "muted" }, u.lastAt ? `${title(u.lastBookId)} · ${relative(u.lastAt)}` : "—")))))),
+    el("section", { class: "widget" },
+      el("div", { class: "w-head" }, el("h2", {}, "Recent sessions")),
+      act.recent.length ? el("table", { class: "grid" },
+        el("thead", {}, el("tr", {}, el("th", {}, "When"), el("th", {}, "User"), el("th", {}, "Book"), el("th", { class: "hide-sm" }, "Device"), el("th", { class: "c-num" }, "Listened"), el("th", { class: "hide-sm" }, "From – to"))),
+        el("tbody", {}, act.recent.map((r) => el("tr", { style: "cursor:default" },
+          el("td", { class: "muted small" }, fmtDateTime(r.endedAt)),
+          el("td", {}, r.user),
+          el("td", {}, title(r.bookId)),
+          el("td", { class: "hide-sm muted" }, r.device || "—"),
+          el("td", { class: "c-num" }, fmtDuration(r.listenedMs)),
+          el("td", { class: "hide-sm mono small muted" }, `${fmtClock(r.startPositionMs)} – ${fmtClock(r.endPositionMs)}`))))) :
+        el("p", { class: "muted", style: "padding:14px" }, "No listening in this period.")),
+    el("p", { class: "tiny muted", style: "margin-top:10px" }, "Worked out from the apps' progress syncs, so it is an estimate and leans low."),
+  ];
+}
+
 // ------------------------------------------------------------------ start
 
 async function start() {
   state.me = await api("/api/me");
+  drawPlayer();
   const hash = location.hash.slice(1);
   if (VIEWS.some((v) => v.id === hash)) state.view = hash;
   render();

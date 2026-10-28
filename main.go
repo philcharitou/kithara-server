@@ -153,18 +153,11 @@ func serveCmd(args []string) {
 	if err := lib.rescan(); err != nil {
 		log.Printf("scan: %v", err)
 	}
-	if *rescan > 0 {
-		go func() {
-			for range time.Tick(*rescan) {
-				if err := lib.rescan(); err != nil {
-					log.Printf("scan: %v", err)
-				}
-			}
-		}()
-	}
-
 	srv := newServer(store, lib, *name)
 	srv.trustProxy = *trustProxy
+	// --name and --rescan are defaults; settings.json (from the web page) overrides.
+	srv.loadSettings(*name, *rescan)
+	go srv.runRescans()
 	var folders []string
 	for _, sp := range specs {
 		folders = append(folders, sp.Path)

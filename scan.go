@@ -94,18 +94,20 @@ type library struct {
 
 	lastScanAt int64 // when the last scan finished, and how long it took
 	lastScanMs int64
+	problems   []Problem // what the last scan could not use
 	probe      *probeCache
 }
 
 // libRoot is one library folder.
 type libRoot struct {
-	name    string
-	path    string
-	idsPath string
-	ids     map[string]string // relative path -> id, for books that cannot hold a sidecar
-	books   []Book            // from its last good scan
-	fixed   bool              // from --library or the environment, not libraries.json
-	lastErr string            // why the last scan of it failed, if it did
+	name     string
+	path     string
+	idsPath  string
+	ids      map[string]string // relative path -> id, for books that cannot hold a sidecar
+	books    []Book            // from its last good scan
+	fixed    bool              // from --library or the environment, not libraries.json
+	problems []Problem         // files its last good scan skipped
+	lastErr  string            // why the last scan of it failed, if it did
 }
 
 // catalogueView is a catalogue as served: its JSON, built once per scan, and its ETag.
@@ -348,12 +350,14 @@ func (l *library) rescan() error {
 		_ = writeJSON(r.idsPath, r.ids)
 	}
 
+	var problems []Problem
 	var all []Book
 	seen := map[string]string{} // id -> library, to catch a book folder copied whole
 	for _, r := range l.roots {
 		for _, b := range r.books {
 			if other, dup := seen[b.ID]; dup {
 				log.Printf("skip %q in %q: same id %s as a book in %q (a copied folder? delete its %s)", b.Title, r.name, b.ID, other, sidecarName)
+				problems = append(problems, Problem{Library: r.name, Path: b.dir, Error: fmt.Sprintf("same id as a book in %q: a copied folder? Delete its %s file", other, sidecarName)})
 				continue
 			}
 			seen[b.ID] = r.name
@@ -395,6 +399,13 @@ func (l *library) rescan() error {
 	l.probe.save()
 	l.mu.Lock()
 	l.lastScanAt, l.lastScanMs = time.Now().UnixMilli(), time.Since(start).Milliseconds()
+	for _, r := range l.roots {
+		problems = append(problems, r.problems...)
+		if r.lastErr != "" {
+			problems = append(problems, Problem{Library: r.name, Path: r.path, Error: "cannot read the library folder: " + r.lastErr})
+		}
+	}
+	l.problems = problems
 	l.mu.Unlock()
 	log.Printf("scanned %d books in %s", len(cat.Books), time.Since(start).Round(time.Millisecond))
 	return errors.Join(errs...)
@@ -428,11 +439,13 @@ func (l *library) scanRoot(r *libRoot) ([]Book, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.problems = nil
 	var books []Book
 	for _, d := range dirs {
 		b, err := l.buildBook(r, d.path, d.files, d.name, false)
 		if err != nil {
 			log.Printf("skip %s: %v", d.path, err)
+			r.problems = append(r.problems, Problem{Library: r.name, Path: d.path, Error: err.Error()})
 			continue
 		}
 		books = append(books, b)
@@ -441,6 +454,7 @@ func (l *library) scanRoot(r *libRoot) ([]Book, error) {
 		b, err := l.buildBook(r, filepath.Dir(f), []string{f}, strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)), true)
 		if err != nil {
 			log.Printf("skip %s: %v", f, err)
+			r.problems = append(r.problems, Problem{Library: r.name, Path: f, Error: err.Error()})
 			continue
 		}
 		books = append(books, b)

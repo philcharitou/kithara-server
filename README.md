@@ -33,10 +33,28 @@ your user name and password. The app checks `/api/health`, signs in, and syncs.
 and sign in with the same account. Everyone can browse their libraries, see their
 listening stats, download a book as a zip, and sign out their devices. Admins can also
 rescan, find and edit metadata (with covers), and manage users and their library access.
-It's part of the binary and uses the same API as the apps: a dashboard (server, libraries,
-listening, devices), the library as a table or covers, listening stats, devices, and for
-admins libraries and users. Dark by default, in the apps' colours; the sun in the top bar
-switches to light.
+It's part of the binary and uses the same API as the apps. For everyone:
+
+- **Listen in the browser**: a player bar with chapters, ±30 s, speed, a sleep timer,
+  bookmarks and media keys. Your place is saved like the apps save it, so you can carry on
+  from your phone.
+- The library as a table, as covers, or **by series and by author**; mark books finished or
+  start them over; see, play from and delete bookmarks; download a book as a zip.
+- Listening stats, your devices, and an **Account** page to change your own password.
+
+For admins, also:
+
+- **Libraries**: add folders from a picker, and **upload** audiobooks into them (drag in
+  folders or files).
+- **Maintenance**: files the last scan skipped and why, and books missing a cover, author,
+  narrator or description, with **bulk matching** against Audible, Open Library or Google
+  Books (review the matches, apply the ticked ones in one go).
+- Per book: find or edit details, **change the cover** (upload a picture), **edit chapters**.
+- **Activity**: who listened to what, and recent sessions. **Users**, and **Settings**: the
+  server's name, how often it rescans (no restart needed), and a **backup** download of
+  everything that can't be rebuilt from the audiobook folders.
+
+Dark by default, in the apps' colours; the sun in the top bar switches to light.
 
 **Adding libraries without restarting.** An admin can add a folder as a library from the
 web page (the folder button in the Library tab's top bar, which opens a picker over the
@@ -159,6 +177,7 @@ covers/               artwork extracted from files, and covers chosen by matchin
 metadata/<bookId>.json  metadata an admin matched or edited (audiobookshelf's format)
 ids-<library>.json    ids by path, for each library (ids.json in older versions)
 libraries.json        libraries added from the web page or `kithara-server library add`
+settings.json         server name and rescan interval set from the web page
 ```
 
 Back up `users.json`, the `users/` folder and `metadata/` (plus `covers/*-match.*`).
@@ -274,6 +293,19 @@ Everything the app talks is in the protocol document. Server specifics:
   `POST /api/books/{bookId}/download-link` returns a `url` for the same zip that needs no
   Authorization header for 10 minutes, for browsers and system download managers. Links
   are signed with a key held only in memory, so a restart voids them.
+- **Streaming:** `POST /api/books/{bookId}/stream-link` returns signed `files[].url`s
+  that play without an Authorization header for 12 hours (for an `<audio>` element).
+  `/audio/...` and `/api/books/{id}/download` accept the same `?u=&exp=&sig=` links.
+- `PUT /api/me/password` with `current` and `new` changes your own password; every other
+  device is signed out, and the response carries a fresh `token` for this one.
+- **Admin:** `PUT /api/libraries/{name}/files?path=Author/Title/file.mp3` (raw body)
+  uploads a file (audio, pictures, .opf/.json/.txt; `409` if it exists unless
+  `&overwrite=1`); `PUT`/`DELETE /api/books/{id}/cover` (raw picture body);
+  `PUT /api/books/{id}/chapters` with `chapters: [{title, startMs}]` (`[]` goes back to
+  the files' chapters); `PUT /api/books/{id}/metadata?rescan=0` saves without rescanning,
+  for batches; `GET /api/problems`; `GET`/`PUT /api/settings` (`name`,
+  `rescanMinutes`; kept in `settings.json`, overriding `--name`/`--rescan`);
+  `GET /api/backup` (a zip); `GET /api/activity?days=30`.
 - How the apps can use all of this: [docs/app-integration.md](docs/app-integration.md).
 - **Metadata (admin):** `GET /api/books/{bookId}/match?provider=audible|openlibrary|google`
   searches by the book's own title and author, or by `title`, `author`, `asin` (Audible)

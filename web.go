@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"io/fs"
@@ -68,26 +67,4 @@ func (s *server) downloadLink(w http.ResponseWriter, r *http.Request, user, toke
 		"url":       "/api/books/" + url.PathEscape(b.ID) + "/download?" + q.Encode(),
 		"expiresAt": exp * 1000,
 	})
-}
-
-// downloadRoute serves the zip to a bearer token or to a valid signed link.
-func (s *server) downloadRoute(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	if q.Get("sig") == "" {
-		s.withUser(s.download)(w, r)
-		return
-	}
-	user := q.Get("u")
-	exp, err := strconv.ParseInt(q.Get("exp"), 10, 64)
-	want := s.linkSig(user, r.PathValue("bookId"), exp)
-	if err != nil || time.Now().Unix() > exp || subtle.ConstantTimeCompare([]byte(want), []byte(q.Get("sig"))) != 1 {
-		writeError(w, http.StatusForbidden, "this download link is not valid or has expired")
-		return
-	}
-	// The user must still exist (and still see the book: download checks).
-	if _, ok := s.store.account(user); !ok {
-		writeError(w, http.StatusForbidden, "this download link is not valid or has expired")
-		return
-	}
-	s.download(w, r, user, "")
 }

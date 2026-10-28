@@ -311,6 +311,11 @@ func (s *server) putMetadata(w http.ResponseWriter, r *http.Request, user, token
 			return
 		}
 	}
+	// ?rescan=0 for a batch: the caller rescans once at the end.
+	if r.URL.Query().Get("rescan") == "0" {
+		writeJSONResponse(w, 200, map[string]bool{"saved": true})
+		return
+	}
 	s.afterMetadataChange(w, id)
 }
 

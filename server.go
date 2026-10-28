@@ -26,14 +26,16 @@ type server struct {
 	ipLimit, userLimit *loginLimiter
 	trustProxy         bool // take the client address from X-Forwarded-For
 
-	match   *matcher
-	linkKey []byte // signs download links
-	started time.Time
+	match    *matcher
+	linkKey  []byte // signs download and audio links
+	started  time.Time
+	settings *settingsBox
 }
 
 func newServer(st *store, lib *library, name string) *server {
 	s := &server{store: st, lib: lib, name: name, mux: http.NewServeMux(),
 		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher(), linkKey: newLinkKey(), started: time.Now()}
+	s.loadSettings(name, 0)
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.health)
 	m.HandleFunc("POST /api/auth", s.auth)
@@ -52,12 +54,14 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("GET /api/bookmarks", s.withUser(s.allBookmarks))
 	m.HandleFunc("POST /api/bookmarks/{bookId}", s.withUser(s.addBookmark))
 	m.HandleFunc("DELETE /api/bookmarks/{bookId}/{id}", s.withUser(s.deleteBookmark))
-	m.HandleFunc("GET /audio/{bookId}/{index}", s.withUser(s.audio))
-	m.HandleFunc("HEAD /audio/{bookId}/{index}", s.withUser(s.audio))
+	m.HandleFunc("GET /audio/{bookId}/{index}", s.signedOr(s.audio))
+	m.HandleFunc("HEAD /audio/{bookId}/{index}", s.signedOr(s.audio))
 	m.HandleFunc("GET /covers/{bookId}", s.withUser(s.cover))
 	m.HandleFunc("HEAD /covers/{bookId}", s.withUser(s.cover))
-	m.HandleFunc("GET /api/books/{bookId}/download", s.downloadRoute)
+	m.HandleFunc("GET /api/books/{bookId}/download", s.signedOr(s.download))
 	m.HandleFunc("POST /api/books/{bookId}/download-link", s.withUser(s.downloadLink))
+	m.HandleFunc("POST /api/books/{bookId}/stream-link", s.withUser(s.streamLink))
+	m.HandleFunc("PUT /api/me/password", s.withUser(s.changePassword))
 
 	m.HandleFunc("GET /api/me", s.withUser(s.me))
 	m.HandleFunc("GET /api/status", s.withUser(s.status))
@@ -72,6 +76,15 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("GET /api/books/{bookId}/match", s.withAdmin(s.matchBook))
 	m.HandleFunc("PUT /api/books/{bookId}/metadata", s.withAdmin(s.putMetadata))
 	m.HandleFunc("DELETE /api/books/{bookId}/metadata", s.withAdmin(s.deleteMetadata))
+	m.HandleFunc("PUT /api/books/{bookId}/cover", s.withAdmin(s.putCover))
+	m.HandleFunc("DELETE /api/books/{bookId}/cover", s.withAdmin(s.deleteCover))
+	m.HandleFunc("PUT /api/books/{bookId}/chapters", s.withAdmin(s.putChapters))
+	m.HandleFunc("PUT /api/libraries/{name}/files", s.withAdmin(s.upload))
+	m.HandleFunc("GET /api/problems", s.withAdmin(s.problems))
+	m.HandleFunc("GET /api/settings", s.withAdmin(s.getSettings))
+	m.HandleFunc("PUT /api/settings", s.withAdmin(s.putSettings))
+	m.HandleFunc("GET /api/backup", s.withAdmin(s.backup))
+	m.HandleFunc("GET /api/activity", s.withAdmin(s.activity))
 	web := s.webHandler()
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.Method != "GET" && r.Method != "HEAD" {
@@ -169,7 +182,7 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, user, token stri
 	scanAt, scanMs := s.lib.lastScanAt, s.lib.lastScanMs
 	s.lib.mu.RUnlock()
 	out := map[string]any{
-		"name": s.name, "version": serverVersion, "protocol": protocolVersion,
+		"name": s.serverName(), "version": serverVersion, "protocol": protocolVersion,
 		"startedAt": s.started.UnixMilli(), "lastScanAt": scanAt, "lastScanMs": scanMs,
 		"books": len(s.lib.catalogueOrEmpty(s.acct(user))),
 	}
@@ -188,7 +201,7 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, user, token stri
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSONResponse(w, 200, map[string]any{"ok": true, "protocol": protocolVersion, "name": s.name, "version": serverVersion})
+	writeJSONResponse(w, 200, map[string]any{"ok": true, "protocol": protocolVersion, "name": s.serverName(), "version": serverVersion})
 }
 
 func (s *server) auth(w http.ResponseWriter, r *http.Request) {
