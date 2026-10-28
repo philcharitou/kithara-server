@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,11 @@ type Progress struct {
 	UpdatedAt  int64    `json:"updatedAt"`
 	Finished   bool     `json:"finished"`
 	Speed      *float64 `json:"speed,omitempty"`
+
+	// Kept by the server (clients may send them; the earliest start is kept): when the
+	// book was first started, and when it was last finished.
+	StartedAt  int64 `json:"startedAt,omitempty"`
+	FinishedAt int64 `json:"finishedAt,omitempty"`
 }
 
 type Bookmark struct {
@@ -42,6 +48,7 @@ type Bookmark struct {
 //	tokens.json              token -> {user, device, createdAt}
 //	users/<name>/progress.json
 //	users/<name>/bookmarks.json
+//	users/<name>/sessions.json   listening sessions, worked out from progress
 //
 // Every write goes to a temp file and is renamed into place, so a crash mid-write
 // leaves the previous file intact.
@@ -234,21 +241,49 @@ func (s *store) allProgress(user string) ([]Progress, error) {
 
 // putProgress applies last-write-wins on updatedAt. It returns the record now stored
 // and whether the incoming one was accepted (false means the caller should answer 409).
-func (s *store) putProgress(user string, in Progress) (Progress, bool, error) {
+// An accepted record also adds to the user's listening sessions; token says which
+// device it came from.
+func (s *store) putProgress(user, token string, in Progress) (Progress, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := map[string]Progress{}
 	if err := readJSON(s.progressPath(user), &m); err != nil {
 		return Progress{}, false, err
 	}
-	if cur, ok := m[in.BookID]; ok && in.UpdatedAt < cur.UpdatedAt {
+	cur, had := m[in.BookID]
+	if had && in.UpdatedAt < cur.UpdatedAt {
 		return cur, false, nil
 	}
 	if in.PositionMs < 0 {
 		in.PositionMs = 0
 	}
+	for _, t := range []int64{cur.StartedAt, in.StartedAt} {
+		if t > 0 && (in.StartedAt == 0 || t < in.StartedAt) {
+			in.StartedAt = t
+		}
+	}
+	if in.StartedAt == 0 && (in.PositionMs > 0 || in.Finished) {
+		in.StartedAt = in.UpdatedAt
+	}
+	switch {
+	case !in.Finished:
+		in.FinishedAt = 0
+	case in.FinishedAt > 0:
+	case cur.Finished && cur.FinishedAt > 0:
+		in.FinishedAt = cur.FinishedAt
+	default:
+		in.FinishedAt = in.UpdatedAt
+	}
 	m[in.BookID] = in
-	return in, true, writeJSON(s.progressPath(user), m)
+	if err := writeJSON(s.progressPath(user), m); err != nil {
+		return Progress{}, false, err
+	}
+	if had {
+		if err := s.recordListening(user, s.tokens[token].Device, cur, in); err != nil {
+			log.Printf("sessions for %s: %v", user, err)
+		}
+	}
+	return in, true, nil
 }
 
 func (s *store) deleteProgress(user, bookID string) error {

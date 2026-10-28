@@ -46,26 +46,61 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  kithara-server serve  [--library DIR] [--data DIR] [--addr :8080] [--name "My shelf"] [--rescan 10m]
-  kithara-server scan   [--library DIR] [--data DIR]        scan once and print the catalogue
+  kithara-server serve  [--library [NAME=]DIR ...] [--data DIR] [--addr :8080] [--name "My shelf"]
+                        [--rescan 10m] [--trust-proxy]
+  kithara-server scan   [--library [NAME=]DIR ...] [--data DIR]   scan once and print the catalogue
   kithara-server user add|remove|list|passwd [NAME] [--data DIR]
   kithara-server version
 
-Flags can also come from the environment: KITHARA_LIBRARY, KITHARA_DATA, KITHARA_ADDR,
-KITHARA_NAME, KITHARA_RESCAN.`)
+--library can be given more than once; each folder is a library of its own, named
+after the folder unless NAME= says otherwise.
+
+Flags can also come from the environment: KITHARA_LIBRARY (several folders separated
+by `+string(os.PathListSeparator)+`), KITHARA_DATA, KITHARA_ADDR, KITHARA_NAME, KITHARA_RESCAN,
+KITHARA_TRUST_PROXY=1.`)
 }
 
 // common flags shared by the subcommands
 type dirs struct {
-	library string
-	data    string
+	libraries libFlag
+	data      string
 }
 
 func dirFlags(fs *flag.FlagSet) *dirs {
 	d := &dirs{}
-	fs.StringVar(&d.library, "library", envOr("KITHARA_LIBRARY", "./library"), "folder holding the audiobooks")
+	fs.Var(&d.libraries, "library", "folder holding audiobooks, as DIR or NAME=DIR (repeatable)")
 	fs.StringVar(&d.data, "data", envOr("KITHARA_DATA", "./data"), "folder for users, tokens, progress and the scan cache")
 	return d
+}
+
+// specs are the library folders from the flags, else the environment, else ./library.
+func (d *dirs) specs() []libSpec {
+	if len(d.libraries) > 0 {
+		return d.libraries
+	}
+	var out []libSpec
+	for _, part := range filepath.SplitList(envOr("KITHARA_LIBRARY", "./library")) {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, parseLibSpec(part))
+		}
+	}
+	return out
+}
+
+// libFlag collects repeated --library flags.
+type libFlag []libSpec
+
+func (f *libFlag) String() string {
+	var parts []string
+	for _, sp := range *f {
+		parts = append(parts, sp.Path)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (f *libFlag) Set(v string) error {
+	*f = append(*f, parseLibSpec(v))
+	return nil
 }
 
 func envOr(key, def string) string {
@@ -81,6 +116,7 @@ func serveCmd(args []string) {
 	addr := fs.String("addr", envOr("KITHARA_ADDR", ":8080"), "address to listen on")
 	name := fs.String("name", envOr("KITHARA_NAME", "Kithara"), "library name shown in the apps")
 	rescan := fs.Duration("rescan", mustDuration(envOr("KITHARA_RESCAN", "10m")), "how often to look for new or changed books (0 = only at start)")
+	trustProxy := fs.Bool("trust-proxy", envOr("KITHARA_TRUST_PROXY", "") != "", "behind a reverse proxy: take client addresses from X-Forwarded-For")
 	fs.Parse(args)
 
 	store, err := openStore(d.data)
@@ -90,7 +126,8 @@ func serveCmd(args []string) {
 	if len(store.users()) == 0 {
 		log.Printf("no users yet: run `kithara-server user add NAME` before connecting an app")
 	}
-	lib := newLibrary(d.library, d.data)
+	specs := d.specs()
+	lib := newLibraries(specs, d.data)
 	if err := lib.rescan(); err != nil {
 		log.Printf("scan: %v", err)
 	}
@@ -105,7 +142,12 @@ func serveCmd(args []string) {
 	}
 
 	srv := newServer(store, lib, *name)
-	log.Printf("kithara-server %s (protocol %d) serving %q on %s, %d books", serverVersion, protocolVersion, d.library, *addr, lib.count())
+	srv.trustProxy = *trustProxy
+	var folders []string
+	for _, sp := range specs {
+		folders = append(folders, sp.Path)
+	}
+	log.Printf("kithara-server %s (protocol %d) serving %s on %s, %d books", serverVersion, protocolVersion, strings.Join(folders, ", "), *addr, lib.count())
 	if err := http.ListenAndServe(*addr, srv); err != nil {
 		log.Fatal(err)
 	}
@@ -115,14 +157,16 @@ func scanCmd(args []string) {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	d := dirFlags(fs)
 	fs.Parse(args)
-	lib := newLibrary(d.library, d.data)
+	lib := newLibraries(d.specs(), d.data)
 	if err := lib.rescan(); err != nil {
 		log.Fatalf("scan: %v", err)
 	}
 	for _, b := range lib.snapshot().Books {
-		fmt.Printf("%-12s %-40s %s  %d file(s), %d chapter(s), %s\n", b.ID, trunc(b.Title, 40), fmtDuration(b.DurationMs), len(b.Files), len(b.Chapters), b.Author)
+		fmt.Printf("%-12s %-14s %-40s %s  %d file(s), %d chapter(s), %s\n", b.ID, trunc(b.Library, 14), trunc(b.Title, 40), fmtDuration(b.DurationMs), len(b.Files), len(b.Chapters), b.Author)
 	}
-	fmt.Printf("%d books\n", lib.count())
+	for _, li := range lib.libraries() {
+		fmt.Printf("%s: %d books, %s\n", li.Name, li.Books, fmtDuration(li.DurationMs))
+	}
 }
 
 func userCmd(args []string) {

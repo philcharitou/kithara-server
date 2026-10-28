@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -36,6 +37,16 @@ type Book struct {
 	Files       []File    `json:"files"`
 	Chapters    []Chapter `json:"chapters"`
 
+	// Additions to the protocol's book (clients ignore fields they do not know).
+	Library       string   `json:"library,omitempty"`
+	Subtitle      string   `json:"subtitle,omitempty"`
+	Genres        []string `json:"genres,omitempty"`
+	Publisher     string   `json:"publisher,omitempty"`
+	PublishedYear string   `json:"publishedYear,omitempty"`
+	Language      string   `json:"language,omitempty"`
+	ISBN          string   `json:"isbn,omitempty"`
+	ASIN          string   `json:"asin,omitempty"`
+
 	coverPath string
 }
 
@@ -61,18 +72,49 @@ type Catalogue struct {
 	Books     []Book `json:"books"`
 }
 
-// library is the scanned catalogue plus what it takes to rebuild it.
+// library is the scanned catalogue plus what it takes to rebuild it. It can be made of
+// several folders ("libraries" to the user: Audiobooks, Kids, Lectures); they are
+// served as one catalogue, as the protocol has it, with each book naming the folder it
+// came from, and can be asked for one at a time.
 type library struct {
-	root    string
+	roots   []*libRoot
 	dataDir string
 
-	mu    sync.RWMutex
-	cat   Catalogue
-	byID  map[string]*Book
-	etag  string
-	body  []byte // the JSON of cat, built once per scan
-	probe *probeCache
-	ids   map[string]string // relative path -> id, for books that cannot hold a sidecar
+	scanMu sync.Mutex // one scan at a time
+	mu     sync.RWMutex
+	cat    Catalogue
+	byID   map[string]*Book
+	view   map[string]catalogueView // "" is everything; else a root's name
+	probe  *probeCache
+}
+
+// libRoot is one library folder.
+type libRoot struct {
+	name    string
+	path    string
+	idsPath string
+	ids     map[string]string // relative path -> id, for books that cannot hold a sidecar
+	books   []Book            // from its last good scan
+}
+
+// catalogueView is a catalogue as served: its JSON, built once per scan, and its ETag.
+type catalogueView struct {
+	body []byte
+	etag string
+	info LibraryInfo
+}
+
+// LibraryInfo is one entry of GET /api/libraries.
+type LibraryInfo struct {
+	Name       string `json:"name"`
+	Books      int    `json:"books"`
+	DurationMs int64  `json:"durationMs"`
+	UpdatedAt  int64  `json:"updatedAt"`
+}
+
+// libSpec names a library folder, from --library [NAME=]DIR.
+type libSpec struct {
+	Name, Path string
 }
 
 var (
@@ -84,17 +126,81 @@ var (
 
 const sidecarName = ".kithara-id"
 
+// newLibrary is a library of one folder.
 func newLibrary(root, dataDir string) *library {
-	l := &library{root: root, dataDir: dataDir, byID: map[string]*Book{}, ids: map[string]string{}}
+	return newLibraries([]libSpec{{Path: root}}, dataDir)
+}
+
+// newLibraries sets up a library over several folders. Each keeps its path records
+// in ids-<name>.json; the first takes over the ids.json of a single-folder setup.
+func newLibraries(specs []libSpec, dataDir string) *library {
+	l := &library{dataDir: dataDir, byID: map[string]*Book{}, view: map[string]catalogueView{}}
 	l.probe = openProbeCache(filepath.Join(dataDir, "probe-cache.json"))
-	_ = readJSON(filepath.Join(dataDir, "ids.json"), &l.ids)
+	for i, sp := range specs {
+		r := &libRoot{name: sp.Name, path: sp.Path, ids: map[string]string{}}
+		if r.name == "" {
+			abs, _ := filepath.Abs(sp.Path)
+			r.name = filepath.Base(abs)
+		}
+		r.idsPath = filepath.Join(dataDir, "ids-"+slug(r.name)+".json")
+		if _, err := os.Stat(r.idsPath); err != nil && i == 0 {
+			_ = readJSON(filepath.Join(dataDir, "ids.json"), &r.ids)
+		} else {
+			_ = readJSON(r.idsPath, &r.ids)
+		}
+		l.roots = append(l.roots, r)
+	}
 	return l
+}
+
+// parseLibSpec reads "DIR" or "NAME=DIR". A path that happens to hold "=" is still a
+// path when the part before it looks like one.
+func parseLibSpec(s string) libSpec {
+	if name, path, ok := strings.Cut(s, "="); ok && name != "" && !strings.ContainsAny(name, `/\`) {
+		return libSpec{Name: strings.TrimSpace(name), Path: path}
+	}
+	return libSpec{Path: s}
+}
+
+var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+func slug(s string) string {
+	if out := strings.Trim(slugRe.ReplaceAllString(strings.ToLower(s), "-"), "-"); out != "" {
+		return out
+	}
+	return "library"
 }
 
 func (l *library) count() int {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return len(l.cat.Books)
+}
+
+// catalogue returns the served JSON and ETag for one library by name, or for all of
+// them with "", and whether there is such a library.
+func (l *library) catalogue(name string) (catalogueView, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if name == "" {
+		return l.view[""], true
+	}
+	for _, r := range l.roots {
+		if strings.EqualFold(r.name, name) {
+			return l.view[r.name], true
+		}
+	}
+	return catalogueView{}, false
+}
+
+func (l *library) libraries() []LibraryInfo {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make([]LibraryInfo, 0, len(l.roots))
+	for _, r := range l.roots {
+		out = append(out, l.view[r.name].info)
+	}
+	return out
 }
 
 func (l *library) snapshot() Catalogue {
@@ -109,23 +215,109 @@ func (l *library) book(id string) *Book {
 	return l.byID[id]
 }
 
-// rescan walks the library folder and rebuilds the catalogue. Probing is cached by
+// rescan walks the library folders and rebuilds the catalogue. Probing is cached by
 // file size and modification time, so a rescan of an unchanged library is cheap.
+//
+// A folder that cannot be read (an unmounted share, a sleeping NAS) keeps the books of
+// its last good scan: the list is authoritative to the apps, and an empty one would
+// make them forget every book in it.
 func (l *library) rescan() error {
+	l.scanMu.Lock()
+	defer l.scanMu.Unlock()
 	start := time.Now()
-	if _, err := os.Stat(l.root); err != nil {
-		return fmt.Errorf("library folder %q: %w", l.root, err)
-	}
 	if !haveFFprobe() {
 		return fmt.Errorf("ffprobe is not on PATH; install ffmpeg to read durations and chapters")
 	}
-	dirs, loose, err := l.findBooks()
+	var errs []error
+	for _, r := range l.roots {
+		books, err := l.scanRoot(r)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("library %q (%s): %w", r.name, r.path, err))
+			continue
+		}
+		r.books = books
+		_ = writeJSON(r.idsPath, r.ids)
+	}
+
+	var all []Book
+	seen := map[string]string{} // id -> library, to catch a book folder copied whole
+	for _, r := range l.roots {
+		for _, b := range r.books {
+			if other, dup := seen[b.ID]; dup {
+				log.Printf("skip %q in %q: same id %s as a book in %q (a copied folder? delete its %s)", b.Title, r.name, b.ID, other, sidecarName)
+				continue
+			}
+			seen[b.ID] = r.name
+			all = append(all, b)
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return strings.ToLower(all[i].Title) < strings.ToLower(all[j].Title) })
+	cat := Catalogue{Books: all}
+	if cat.Books == nil {
+		cat.Books = []Book{}
+	}
+	byID := map[string]*Book{}
+	for i := range cat.Books {
+		byID[cat.Books[i].ID] = &cat.Books[i]
+	}
+	views := map[string]catalogueView{}
+	everything, err := buildView("", cat.Books)
 	if err != nil {
 		return err
 	}
+	cat.UpdatedAt = everything.info.UpdatedAt
+	views[""] = everything
+	for _, r := range l.roots {
+		var mine []Book
+		for _, b := range cat.Books {
+			if b.Library == r.name {
+				mine = append(mine, b)
+			}
+		}
+		if views[r.name], err = buildView(r.name, mine); err != nil {
+			return err
+		}
+	}
+
+	l.mu.Lock()
+	l.cat, l.byID, l.view = cat, byID, views
+	l.mu.Unlock()
+	l.probe.save()
+	log.Printf("scanned %d books in %s", len(cat.Books), time.Since(start).Round(time.Millisecond))
+	return errors.Join(errs...)
+}
+
+func buildView(name string, books []Book) (catalogueView, error) {
+	cat := Catalogue{Books: books}
+	if cat.Books == nil {
+		cat.Books = []Book{}
+	}
+	info := LibraryInfo{Name: name, Books: len(books)}
+	for _, b := range books {
+		info.UpdatedAt = max(info.UpdatedAt, b.UpdatedAt)
+		info.DurationMs += b.DurationMs
+	}
+	cat.UpdatedAt = info.UpdatedAt
+	body, err := json.Marshal(cat)
+	if err != nil {
+		return catalogueView{}, err
+	}
+	sum := sha256.Sum256(body)
+	return catalogueView{body: body, etag: `"` + hex.EncodeToString(sum[:8]) + `"`, info: info}, nil
+}
+
+// scanRoot builds the books of one library folder.
+func (l *library) scanRoot(r *libRoot) ([]Book, error) {
+	if _, err := os.Stat(r.path); err != nil {
+		return nil, err
+	}
+	dirs, loose, err := findBooks(r.path)
+	if err != nil {
+		return nil, err
+	}
 	var books []Book
 	for _, d := range dirs {
-		b, err := l.buildBook(d.path, d.files, d.name)
+		b, err := l.buildBook(r, d.path, d.files, d.name)
 		if err != nil {
 			log.Printf("skip %s: %v", d.path, err)
 			continue
@@ -133,41 +325,14 @@ func (l *library) rescan() error {
 		books = append(books, b)
 	}
 	for _, f := range loose {
-		b, err := l.buildBook(filepath.Dir(f), []string{f}, strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)))
+		b, err := l.buildBook(r, filepath.Dir(f), []string{f}, strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)))
 		if err != nil {
 			log.Printf("skip %s: %v", f, err)
 			continue
 		}
 		books = append(books, b)
 	}
-	sort.Slice(books, func(i, j int) bool { return strings.ToLower(books[i].Title) < strings.ToLower(books[j].Title) })
-
-	cat := Catalogue{Books: books}
-	if cat.Books == nil {
-		cat.Books = []Book{}
-	}
-	for _, b := range books {
-		if b.UpdatedAt > cat.UpdatedAt {
-			cat.UpdatedAt = b.UpdatedAt
-		}
-	}
-	body, err := json.Marshal(cat)
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(body)
-	byID := map[string]*Book{}
-	for i := range cat.Books {
-		byID[cat.Books[i].ID] = &cat.Books[i]
-	}
-
-	l.mu.Lock()
-	l.cat, l.byID, l.body, l.etag = cat, byID, body, `"`+hex.EncodeToString(sum[:8])+`"`
-	l.mu.Unlock()
-	l.probe.save()
-	_ = writeJSON(filepath.Join(l.dataDir, "ids.json"), l.ids)
-	log.Printf("scanned %d books in %s", len(books), time.Since(start).Round(time.Millisecond))
-	return nil
+	return books, nil
 }
 
 type bookDir struct {
@@ -179,7 +344,7 @@ type bookDir struct {
 // findBooks decides what counts as a book: a folder with audio files directly in it,
 // or a folder whose only audio lives in CD1/CD2-style subfolders, or a lone audio file
 // in a folder that is otherwise a container of books.
-func (l *library) findBooks() ([]bookDir, []string, error) {
+func findBooks(root string) ([]bookDir, []string, error) {
 	var dirs []bookDir
 	var loose []string
 	var walk func(dir string, depth int) (bool, error)
@@ -256,7 +421,7 @@ func (l *library) findBooks() ([]bookDir, []string, error) {
 		}
 		return childHasBooks, nil
 	}
-	_, err := walk(l.root, 0)
+	_, err := walk(root, 0)
 	return dirs, loose, err
 }
 
@@ -305,13 +470,24 @@ func naturalLess(items []string) func(i, j int) bool {
 }
 
 // buildBook probes the files and assembles one catalogue entry.
-func (l *library) buildBook(dir string, files []string, fallbackTitle string) (Book, error) {
+func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitle string) (Book, error) {
 	single := len(files) == 1 && filepath.Dir(files[0]) == dir && !isBookFolder(dir, files[0])
-	id, err := l.idFor(dir, files[0], single)
+	id, err := l.idFor(r, dir, files[0], single)
 	if err != nil {
 		return Book{}, err
 	}
-	b := Book{ID: id, Title: fallbackTitle, Files: []File{}, Chapters: []Chapter{}}
+	b := Book{ID: id, Title: fallbackTitle, Library: r.name, Files: []File{}, Chapters: []Chapter{}}
+
+	// The folders above the book, for author and series: all of them for a lone file,
+	// all but the book's own for a book folder.
+	var above []string
+	if rel, err := filepath.Rel(r.path, dir); err == nil && rel != "." {
+		above = strings.Split(filepath.ToSlash(rel), "/")
+		if !single {
+			above = above[:len(above)-1]
+		}
+	}
+	b.apply(folderMeta(fallbackTitle, above))
 
 	var offset int64
 	var anyChapters bool
@@ -329,7 +505,7 @@ func (l *library) buildBook(dir string, files []string, fallbackTitle string) (B
 			b.UpdatedAt = info.ModTime().UnixMilli()
 		}
 		if i == 0 {
-			applyTags(&b, pr.Tags, single, fallbackTitle)
+			b.apply(tagMeta(pr.Tags, single))
 		}
 		b.Files = append(b.Files, File{
 			Index: i, Name: filepath.Base(path), URL: "/audio/" + id + "/" + strconv.Itoa(i),
@@ -366,6 +542,17 @@ func (l *library) buildBook(dir string, files []string, fallbackTitle string) (B
 		}
 	}
 
+	// Metadata files in the book's folder have the last word, chapters included (the
+	// chapter list audiobookshelf's editor saves into metadata.json).
+	if !single {
+		sm, modified := sidecarMeta(dir)
+		b.apply(sm)
+		b.UpdatedAt = max(b.UpdatedAt, modified)
+		if chs := clampChapters(sm.Chapters, b.DurationMs); len(chs) > 0 {
+			b.Chapters = chs
+		}
+	}
+
 	// Cover: a picture in the folder, else one pulled out of the first file.
 	if !single {
 		for _, n := range coverName {
@@ -390,6 +577,20 @@ func (l *library) buildBook(dir string, files []string, fallbackTitle string) (B
 	return b, nil
 }
 
+// clampChapters keeps chapters from a metadata file on the book's timeline, in order.
+func clampChapters(chs []Chapter, durationMs int64) []Chapter {
+	var out []Chapter
+	for _, c := range chs {
+		if c.StartMs >= durationMs || c.EndMs <= c.StartMs {
+			continue
+		}
+		c.EndMs = min(c.EndMs, durationMs)
+		out = append(out, c)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].StartMs < out[j].StartMs })
+	return out
+}
+
 // isBookFolder: a lone file in a folder named after it is still "a book folder",
 // so the sidecar id can live there.
 func isBookFolder(dir, file string) bool {
@@ -397,58 +598,26 @@ func isBookFolder(dir, file string) bool {
 	return strings.EqualFold(filepath.Base(dir), base)
 }
 
-func applyTags(b *Book, tags map[string]string, single bool, fallback string) {
-	get := func(keys ...string) string {
-		for _, k := range keys {
-			if v := strings.TrimSpace(tags[k]); v != "" {
-				return v
-			}
-		}
-		return ""
-	}
-	// A folder's name is the safer title for a multi-file book: per-file "title" tags
-	// are usually chapter names. A single file's own title tag is the book.
-	if single {
-		if t := get("album", "title"); t != "" {
-			b.Title = t
-		}
-	} else if t := get("album"); t != "" {
-		b.Title = t
-	}
-	if b.Title == "" {
-		b.Title = fallback
-	}
-	b.Author = get("artist", "album_artist", "author")
-	b.Narrator = get("composer", "narrator", "performer")
-	b.Series = get("series", "mvnm", "grouping")
-	if s := get("series-part", "series_index", "mvin", "part"); s != "" {
-		if f, err := strconv.ParseFloat(strings.TrimSpace(strings.Split(s, "/")[0]), 64); err == nil {
-			b.SeriesIndex = &f
-		}
-	}
-	b.Description = get("description", "comment", "synopsis")
-}
-
 // idFor keeps a book's id with the book: a sidecar file in its folder, so the id
 // survives renames and moves, and a path-keyed record in the data folder as a second
 // copy, so a lost sidecar (a restore from backup, a tidy-up) does not turn the book
 // into a new one and orphan its listening position. A lone file among others has
 // only the path record.
-func (l *library) idFor(dir, firstFile string, loose bool) (string, error) {
+func (l *library) idFor(r *libRoot, dir, firstFile string, loose bool) (string, error) {
 	if loose {
-		rel, _ := filepath.Rel(l.root, firstFile)
-		return l.idByPath(filepath.ToSlash(rel), ""), nil
+		rel, _ := filepath.Rel(r.path, firstFile)
+		return l.idByPath(r, filepath.ToSlash(rel), ""), nil
 	}
-	rel, _ := filepath.Rel(l.root, dir)
+	rel, _ := filepath.Rel(r.path, dir)
 	key := filepath.ToSlash(rel)
 	p := filepath.Join(dir, sidecarName)
 	if data, err := os.ReadFile(p); err == nil {
 		if id := strings.TrimSpace(string(data)); id != "" {
-			l.idByPath(key, id) // keep the path record in step with the sidecar
+			l.idByPath(r, key, id) // keep the path record in step with the sidecar
 			return id, nil
 		}
 	}
-	id := l.idByPath(key, "")
+	id := l.idByPath(r, key, "")
 	if err := os.WriteFile(p, []byte(id+"\n"), 0o644); err != nil {
 		log.Printf("no sidecar in %s (%v); id kept by path", dir, err)
 	}
@@ -458,16 +627,16 @@ func (l *library) idFor(dir, firstFile string, loose bool) (string, error) {
 // idByPath returns the id recorded for a path, recording preferred (or a new id)
 // when there is none. A sidecar that disagrees with the record wins: the folder was
 // moved here from elsewhere and its id came with it.
-func (l *library) idByPath(rel, preferred string) string {
+func (l *library) idByPath(r *libRoot, rel, preferred string) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if id, ok := l.ids[rel]; ok && (preferred == "" || id == preferred) {
+	if id, ok := r.ids[rel]; ok && (preferred == "" || id == preferred) {
 		return id
 	}
 	if preferred == "" {
 		preferred = newID()
 	}
-	l.ids[rel] = preferred
+	r.ids[rel] = preferred
 	return preferred
 }
 
