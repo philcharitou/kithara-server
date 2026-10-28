@@ -35,6 +35,8 @@ func main() {
 		userCmd(os.Args[2:])
 	case "match":
 		matchCmd(os.Args[2:])
+	case "library":
+		libraryCmd(os.Args[2:])
 	case "scan":
 		scanCmd(os.Args[2:])
 	case "version":
@@ -52,6 +54,9 @@ func usage() {
   kithara-server scan   [--library [NAME=]DIR ...] [--data DIR]   scan once and print the catalogue
   kithara-server match  [--provider audible|openlibrary|google] [--apply N] BOOK_ID
                         look a book up and keep a result as its metadata
+  kithara-server library list
+  kithara-server library add [NAME] DIR                      (kept in the data folder)
+  kithara-server library remove NAME
   kithara-server user list
   kithara-server user add NAME [--admin] [--libraries A,B]   (the first user is an admin)
   kithara-server user passwd|remove NAME
@@ -84,13 +89,19 @@ func dirFlags(fs *flag.FlagSet) *dirs {
 	return d
 }
 
-// specs are the library folders from the flags, else the environment, else ./library.
+// specs are the library folders from the flags, else the environment, else ./library
+// when there is one. (Libraries added from the web page are kept in the data folder
+// and come on top.)
 func (d *dirs) specs() []libSpec {
 	if len(d.libraries) > 0 {
 		return d.libraries
 	}
+	def := ""
+	if info, err := os.Stat("library"); err == nil && info.IsDir() {
+		def = "./library"
+	}
 	var out []libSpec
-	for _, part := range filepath.SplitList(envOr("KITHARA_LIBRARY", "./library")) {
+	for _, part := range filepath.SplitList(envOr("KITHARA_LIBRARY", def)) {
 		if part = strings.TrimSpace(part); part != "" {
 			out = append(out, parseLibSpec(part))
 		}
@@ -286,6 +297,59 @@ func userCmd(args []string) {
 			log.Fatal(err)
 		}
 		fmt.Printf("user %q removed\n", name)
+	default:
+		usage()
+		os.Exit(2)
+	}
+}
+
+// libraryCmd manages the libraries kept in the data folder (the ones also managed from
+// the web page). A running server picks changes up on its next scan.
+func libraryCmd(args []string) {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("library "+sub, flag.ExitOnError)
+	d := dirFlags(fs)
+	pos := splitArgs(fs, args[1:])
+	lib := newLibraries(d.specs(), d.data)
+	switch sub {
+	case "list":
+		for _, li := range lib.libraries(Account{Role: roleAdmin}) {
+			from := "data folder"
+			if li.Fixed {
+				from = "command line"
+			}
+			fmt.Printf("%-20s %s  (%s)\n", li.Name, li.Path, from)
+		}
+	case "add":
+		var name, dir string
+		switch len(pos) {
+		case 1:
+			dir = pos[0]
+		case 2:
+			name, dir = pos[0], pos[1]
+		default:
+			log.Fatal("usage: kithara-server library add [NAME] DIR")
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := lib.storeLibrary(name, abs); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("added %s; a running server scans it within its --rescan interval (or rescan from the web page)\n", abs)
+	case "remove":
+		if len(pos) != 1 {
+			log.Fatal("usage: kithara-server library remove NAME")
+		}
+		if err := lib.unstoreLibrary(pos[0]); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("removed %s\n", pos[0])
 	default:
 		usage()
 		os.Exit(2)

@@ -88,7 +88,10 @@ type library struct {
 	view   map[string]catalogueView // "" is everything; else a root's name
 	combos map[string]catalogueView // for users limited to several libraries, built on demand
 	gen    int                      // scans so far, so a view built from an older one is not kept
-	probe  *probeCache
+
+	storedSeen fileStamp // libraries.json as last read
+	storedRead bool
+	probe      *probeCache
 }
 
 // libRoot is one library folder.
@@ -98,6 +101,8 @@ type libRoot struct {
 	idsPath string
 	ids     map[string]string // relative path -> id, for books that cannot hold a sidecar
 	books   []Book            // from its last good scan
+	fixed   bool              // from --library or the environment, not libraries.json
+	lastErr string            // why the last scan of it failed, if it did
 }
 
 // catalogueView is a catalogue as served: its JSON, built once per scan, and its ETag.
@@ -113,6 +118,12 @@ type LibraryInfo struct {
 	Books      int    `json:"books"`
 	DurationMs int64  `json:"durationMs"`
 	UpdatedAt  int64  `json:"updatedAt"`
+
+	// For admins only: where it is, whether it was set on the command line (and so
+	// cannot be removed from the web page), and what went wrong scanning it.
+	Path  string `json:"path,omitempty"`
+	Fixed bool   `json:"fixed,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // libSpec names a library folder, from --library [NAME=]DIR.
@@ -140,20 +151,31 @@ func newLibraries(specs []libSpec, dataDir string) *library {
 	l := &library{dataDir: dataDir, byID: map[string]*Book{}, view: map[string]catalogueView{}, combos: map[string]catalogueView{}}
 	l.probe = openProbeCache(filepath.Join(dataDir, "probe-cache.json"))
 	for i, sp := range specs {
-		r := &libRoot{name: sp.Name, path: sp.Path, ids: map[string]string{}}
-		if r.name == "" {
-			abs, _ := filepath.Abs(sp.Path)
-			r.name = filepath.Base(abs)
-		}
-		r.idsPath = filepath.Join(dataDir, "ids-"+slug(r.name)+".json")
-		if _, err := os.Stat(r.idsPath); err != nil && i == 0 {
-			_ = readJSON(filepath.Join(dataDir, "ids.json"), &r.ids)
-		} else {
-			_ = readJSON(r.idsPath, &r.ids)
-		}
+		r := l.newRoot(sp, i == 0)
+		r.fixed = true
 		l.roots = append(l.roots, r)
 	}
+	if err := l.syncStored(); err != nil {
+		log.Printf("libraries.json: %v", err)
+	}
 	return l
+}
+
+// newRoot sets up one library folder; the first of a server takes over the ids.json of
+// a single-folder setup.
+func (l *library) newRoot(sp libSpec, first bool) *libRoot {
+	r := &libRoot{name: sp.Name, path: sp.Path, ids: map[string]string{}}
+	if r.name == "" {
+		abs, _ := filepath.Abs(sp.Path)
+		r.name = filepath.Base(abs)
+	}
+	r.idsPath = filepath.Join(l.dataDir, "ids-"+slug(r.name)+".json")
+	if _, err := os.Stat(r.idsPath); err != nil && first {
+		_ = readJSON(filepath.Join(l.dataDir, "ids.json"), &r.ids)
+	} else {
+		_ = readJSON(r.idsPath, &r.ids)
+	}
+	return r
 }
 
 // parseLibSpec reads "DIR" or "NAME=DIR". A path that happens to hold "=" is still a
@@ -244,9 +266,15 @@ func (l *library) libraries(a Account) []LibraryInfo {
 	defer l.mu.RUnlock()
 	out := make([]LibraryInfo, 0, len(l.roots))
 	for _, r := range l.roots {
-		if a.sees(r.name) {
-			out = append(out, l.view[r.name].info)
+		if !a.sees(r.name) {
+			continue
 		}
+		info := l.view[r.name].info
+		info.Name = r.name // also before its first scan
+		if a.admin() {
+			info.Path, info.Fixed, info.Error = r.path, r.fixed, r.lastErr
+		}
+		out = append(out, info)
 	}
 	return out
 }
@@ -282,6 +310,9 @@ func (l *library) rescan() error {
 	l.scanMu.Lock()
 	defer l.scanMu.Unlock()
 	start := time.Now()
+	if err := l.syncStored(); err != nil {
+		log.Printf("libraries.json: %v", err)
+	}
 	if !haveFFprobe() {
 		return fmt.Errorf("ffprobe is not on PATH; install ffmpeg to read durations and chapters")
 	}
@@ -290,9 +321,14 @@ func (l *library) rescan() error {
 		books, err := l.scanRoot(r)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("library %q (%s): %w", r.name, r.path, err))
+			l.mu.Lock()
+			r.lastErr = err.Error()
+			l.mu.Unlock()
 			continue
 		}
-		r.books = books
+		l.mu.Lock()
+		r.books, r.lastErr = books, ""
+		l.mu.Unlock()
 		_ = writeJSON(r.idsPath, r.ids)
 	}
 

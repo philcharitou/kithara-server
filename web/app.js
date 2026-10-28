@@ -1,7 +1,8 @@
 // The kithara-server web page. Plain modules, no build step, no dependencies. It signs
 // in like an app and uses the same API; every bit of text from the server is set with
-// textContent, never parsed as HTML. It follows the apps' look: the lyre mark, chips,
-// the purple-to-gold progress bar, the Listening tiles.
+// textContent, never parsed as HTML. Its components follow the Android app's Compose
+// screens: BrandTopBar, FilterChip rows, the library list and grid, the Sources screen,
+// StatsScreen's cards, and a NavigationBar (a rail on wide screens).
 
 const app = document.getElementById("app");
 const dialog = document.getElementById("book");
@@ -17,7 +18,7 @@ const state = {
   progress: new Map(),
   query: "",
   view: "library",
-  prefs: { layout: "list", sort: "recent", filter: "all", library: "" },
+  prefs: { layout: "list", sort: "recent", filter: "all", library: "", theme: "system" },
 };
 
 // ------------------------------------------------------------------ helpers
@@ -40,19 +41,20 @@ function el(tag, attrs = {}, ...children) {
   return n;
 }
 
-// Material icons, as paths, drawn into inline SVG.
+// Material icons (the same set the app uses), drawn into inline SVG.
 const ICONS = {
   library: "M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z",
-  stats: "M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.970-4-4L2 16.99z",
+  stats: "M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z",
   devices: "M4 6h18V4H4c-1.1 0-2 .9-2 2v11H0v3h14v-3H4V6zm19 2h-6c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V9c0-.55-.45-1-1-1zm-1 9h-4v-7h4v7z",
   users: "M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z",
-  search: "M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.230-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z",
+  search: "M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z",
   check: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z",
   sort: "M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3L5 6.99h3V14h2V6.99h3L9 3z",
   grid: "M3 3v8h8V3H3zm6 6H5V5h4v4zm-6 4v8h8v-8H3zm6 6H5v-4h4v4zm4-16v8h8V3h-8zm6 6h-4V5h4v4zm-6 4v8h8v-8h-8zm6 6h-4v-4h4v4z",
   list: "M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z",
   down: "M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z",
-  back: "M20 11H7.830l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z",
+  back: "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z",
+  close: "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
   download: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z",
   refresh: "M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z",
   logout: "M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z",
@@ -60,10 +62,17 @@ const ICONS = {
   magic: "M7.5 5.6L10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 00-1.41 0L1.29 18.96a.996.996 0 000 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 000-1.41l-2.33-2.35zm-1.03 5.49l-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z",
   chapters: "M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z",
   files: "M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z",
+  folder: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z",
+  remove: "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z",
+  add: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z",
+  up: "M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z",
   phone: "M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z",
   tablet: "M21 4H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h18c1.1 0 1.99-.9 1.99-2L23 6c0-1.1-.9-2-2-2zm-2 14H5V6h14v12z",
   computer: "M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z",
-  web: "M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm6.93 6h-2.95a15.650 15.650 0 00-1.38-3.56A8.03 8.03 0 0118.92 8zM12 4.04c.83 1.2 1.48 2.53 1.91 3.96h-3.82c.43-1.43 1.08-2.76 1.91-3.96zM4.26 14C4.1 13.36 4 12.69 4 12s.1-1.36.26-2h3.38c-.08.66-.14 1.32-.14 2s.06 1.34.14 2H4.26zm.82 2h2.95c.32 1.25.78 2.45 1.38 3.56A7.987 7.987 0 015.08 16zm2.95-8H5.08a7.987 7.987 0 014.33-3.56A15.65 15.65 0 008.03 8zM12 19.96c-.83-1.2-1.48-2.53-1.91-3.96h3.82c-.43 1.43-1.08 2.76-1.91 3.96zM14.34 14H9.66c-.09-.66-.16-1.32-.16-2s.07-1.35.16-2h4.68c.09.65.16 1.32.16 2s-.07 1.34-.16 2zm.25 5.56c.6-1.11 1.06-2.31 1.38-3.56h2.95a8.03 8.03 0 01-4.33 3.56zM16.36 14c.08-.66.14-1.32.14-2s-.06-1.34-.14-2h3.38c.16.64.26 1.31.26 2s-.1 1.36-.26 2h-3.38z",
+  web: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z",
+  dark: "M12 3a9 9 0 109 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 01-4.4 2.26 5.403 5.403 0 01-3.14-9.8c-.44-.06-.9-.1-1.36-.1z",
+  light: "M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0a.996.996 0 000-1.41l-1.06-1.06zm1.06-10.96a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z",
+  auto: "M10.85 12.65h2.3L12 9l-1.15 3.65zM20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12 20 8.69zM14.3 16l-.7-2h-3.2l-.7 2H7.8L11 7h2l3.2 9h-1.9z",
 };
 
 function icon(name, cls = "") {
@@ -78,8 +87,12 @@ function icon(name, cls = "") {
   return svg;
 }
 
+const text = (cls, ...children) => el("span", { class: cls }, ...children);
+
 function toast(msg) {
   const t = document.getElementById("toast");
+  // An open sheet sits in the top layer; the toast goes with it so it shows above the scrim.
+  (dialog.open ? dialog : document.body).append(t);
   t.textContent = msg;
   t.classList.add("show");
   clearTimeout(toast.timer);
@@ -96,6 +109,16 @@ function loadPrefs() {
 
 function savePrefs() {
   try { storage()?.setItem(PREFS_KEY, JSON.stringify(state.prefs)); } catch { /* not kept */ }
+}
+
+// The theme, as the app's setting: follow the system, or always light, or always dark.
+const THEMES = { system: ["Follow system", "auto"], light: ["Light", "light"], dark: ["Dark", "dark"] };
+function applyTheme() {
+  const t = state.prefs.theme;
+  if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  const dark = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#141218" : "#fdf8ff");
 }
 
 function saveToken(token, remember) {
@@ -130,12 +153,13 @@ async function api(path, { method = "GET", body, raw = false } = {}) {
     throw new ApiError(401, "signed out");
   }
   if (raw) return res;
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  const body2 = await res.text();
+  const data = body2 ? JSON.parse(body2) : null;
   if (!res.ok) throw new ApiError(res.status, data?.error || res.statusText);
   return data;
 }
 
+// Format.kt's shapes: "4h 1m", "52m".
 const fmtDuration = (ms) => {
   const m = Math.round((ms || 0) / 60000);
   const h = Math.floor(m / 60);
@@ -183,48 +207,32 @@ async function fillCover(box) {
       blobURL = URL.createObjectURL(await res.blob());
       coverCache.set(url, blobURL);
     }
-    box.replaceWith(el("img", { class: box.dataset.cls, src: blobURL, alt: "" }));
-  } catch { /* keep the typeset cover */ }
+    box.replaceWith(el("img", { class: "cover", src: blobURL, alt: "" }));
+  } catch { /* keep the stand-in */ }
 }
 
-// The typeset stand-in, in the manner of the apps' sample covers: a colour pair picked
-// from the title, the title set in a serif, a ring in the corner.
-const MADE = [
-  ["#123b3a", "#f1e6c8", "#d4a64a"], ["#f3efe6", "#1d1b20", "#d4543a"], ["#5c6b3a", "#f5edd6", "#e2c56a"],
-  ["#0e0e12", "#f4f4f4", "#4ade80"], ["#162447", "#f1e6c8", "#d4a64a"], ["#eef1f5", "#1f2d4d", "#3b5b8c"],
-  ["#3b1f4f", "#f3e8ff", "#c9a24d"], ["#5a1f1f", "#fbe9e0", "#e6b85c"],
-];
-
-function madeCover(book, cls) {
-  let h = 0;
-  for (const ch of book.title || "") h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  const [bg, ink, accent] = MADE[h % MADE.length];
-  const author = book.author || (book.authors || []).join(", ");
-  return el("div", { class: cls + " made", "aria-hidden": "true", style: `--made-bg:${bg};--made-ink:${ink};--made-accent:${accent}` },
-    el("span", { class: "t" }, book.title), el("span", { class: "a" }, author));
-}
-
-function cover(book, extra = "") {
-  const cls = ("cover " + extra).trim();
-  const box = madeCover(book, cls);
+// The app's stand-in for a book without artwork: surface-variant, the title's first two
+// letters. A finished book wears the FinishedBadge in the corner.
+function cover(book) {
+  const box = el("div", { class: "cover blank", "aria-hidden": "true" }, (book.title || "").slice(0, 2));
   if (book.coverUrl) {
     // updatedAt in the address, so a changed cover is fetched again.
     box.dataset.src = book.coverUrl + "?v=" + book.updatedAt;
-    box.dataset.cls = cls;
     coverObserver.observe(box);
   }
-  return box;
+  const finished = book.id && progressOf(book)?.finished;
+  return el("div", { class: "cover-box" }, box, finished ? el("span", { class: "finished", title: "Finished" }, icon("check")) : null);
 }
 
 // ------------------------------------------------------------------ sign in
 
 function renderSignIn(message = "") {
   dialog.open && dialog.close();
-  const err = el("p", { class: "error small", role: "alert" }, message);
+  const err = el("p", { class: "body-medium error-text", role: "alert" }, message);
   const user = el("input", { type: "text", name: "username", autocomplete: "username", required: true, autofocus: true });
   const pass = el("input", { type: "password", name: "password", autocomplete: "current-password", required: true });
   const remember = el("input", { type: "checkbox", name: "remember" });
-  const submit = el("button", { class: "btn primary", type: "submit" }, "Sign in");
+  const submit = el("button", { class: "btn", type: "submit" }, "Sign in");
   const form = el("form", {
     onsubmit: async (ev) => {
       ev.preventDefault();
@@ -240,16 +248,17 @@ function renderSignIn(message = "") {
       }
     },
   },
-    el("label", {}, "User name", user),
-    el("label", {}, "Password", pass),
-    el("label", { class: "check" }, remember, "Keep me signed in on this browser"),
+    el("label", { class: "field" }, el("span", {}, "User name"), user),
+    el("label", { class: "field" }, el("span", {}, "Password"), pass),
+    el("label", { class: "check body-medium" }, remember, "Keep me signed in on this browser"),
     err,
     submit,
   );
   app.replaceChildren(el("div", { class: "signin" },
     el("img", { class: "mark", src: "logo.svg", alt: "" }),
-    el("h1", {}, state.server?.name || "Kithara"),
-    el("p", { class: "muted" }, "Sign in with your Kithara account. New accounts come from whoever runs this server."),
+    el("div", {},
+      el("h1", { class: "headline-small" }, state.server?.name || "Kithara"),
+      el("p", { class: "body-medium variant", style: "margin-top:8px" }, "Sign in with your Kithara account. Accounts are made by whoever runs this server.")),
     form));
 }
 
@@ -264,27 +273,38 @@ function browserName() {
 
 const VIEWS = [
   { id: "library", label: "Library", icon: "library" },
-  { id: "stats", label: "Listening", icon: "stats" },
-  { id: "devices", label: "Devices", icon: "devices" },
-  { id: "users", label: "Users", icon: "users", admin: true },
+  { id: "stats", label: "Listening", icon: "stats", narrow: true },
+  { id: "devices", label: "Devices", icon: "devices", narrow: true },
+  { id: "users", label: "Users", icon: "users", narrow: true, admin: true },
 ];
 
 function renderShell(current) {
-  const tabs = el("nav", { class: "tabs", "aria-label": "Sections" },
+  const nav = el("nav", { class: "bar", "aria-label": "Sections" },
     VIEWS.filter((v) => !v.admin || isAdmin()).map((v) =>
-      el("button", { type: "button", "aria-current": state.view === v.id ? "page" : null, onclick: () => go(v.id) }, icon(v.icon), el("span", {}, v.label))));
+      el("button", { type: "button", "aria-current": state.view === v.id ? "page" : null, onclick: () => go(v.id) },
+        el("span", { class: "pill" }, icon(v.icon)), v.label)));
+  const [themeLabel, themeIcon] = THEMES[state.prefs.theme] || THEMES.system;
+  const themeBtn = el("button", { class: "icon-btn", type: "button", title: `Theme: ${themeLabel}`, "aria-label": `Theme: ${themeLabel}`, onclick: () => {
+    const order = Object.keys(THEMES);
+    state.prefs.theme = order[(order.indexOf(state.prefs.theme) + 1) % order.length];
+    savePrefs(); applyTheme();
+    const [label, ic] = THEMES[state.prefs.theme];
+    themeBtn.replaceChildren(icon(ic));
+    themeBtn.title = `Theme: ${label}`;
+    themeBtn.setAttribute("aria-label", `Theme: ${label}`);
+    toast(`Theme: ${label}`);
+  } }, icon(themeIcon));
   const top = el("header", { class: "topbar" },
-    el("div", { class: "title" },
-      el("img", { src: "logo.svg", alt: "" }),
-      el("div", {}, el("h1", {}, current.label), el("div", { class: "server" }, state.server?.name || ""))),
-    tabs,
-    el("div", { class: "end" },
-      el("span", { class: "who", title: state.me.name },
-        el("span", { class: "avatar", "aria-hidden": "true" }, state.me.name.slice(0, 1)),
-        el("span", { class: "name" }, state.me.name, isAdmin() ? el("span", { class: "badge", style: "margin-left:.4rem" }, "admin") : null)),
-      el("button", { class: "icon-btn", type: "button", title: "Sign out", "aria-label": "Sign out", onclick: signOut }, icon("logout"))));
-  const main = el("main", { id: "main" });
-  app.replaceChildren(el("div", { class: "shell" }, top, main));
+    el("img", { class: "mark", src: "logo.svg", alt: "" }),
+    el("h1", { class: "title-large clip" }, current.label),
+    current.id === "library" ? el("span", { id: "top-actions", class: "row", style: "gap:0;flex-wrap:nowrap" }) : null,
+    themeBtn,
+    el("span", { class: "who", title: `${state.me.name}${isAdmin() ? " (admin)" : ""}` },
+      el("span", { class: "avatar", "aria-hidden": "true" }, state.me.name.slice(0, 1)),
+      text("label-large clip", state.me.name)),
+    el("button", { class: "icon-btn", type: "button", title: "Sign out", "aria-label": "Sign out", onclick: signOut }, icon("logout")));
+  const main = el("main", { id: "main", class: current.narrow ? "content narrow" : "content" });
+  app.replaceChildren(nav, el("div", { class: "frame" }, top, main));
   return main;
 }
 
@@ -304,12 +324,12 @@ async function render() {
   const current = VIEWS.find((v) => v.id === state.view && (!v.admin || isAdmin())) || VIEWS[0];
   state.view = current.id;
   const main = renderShell(current);
-  main.append(el("p", { class: "muted" }, "Loading…"));
+  main.append(el("p", { class: "body-medium variant", style: "padding:16px" }, "Loading…"));
   try {
     const view = { library: viewLibrary, stats: viewStats, devices: viewDevices, users: viewUsers }[current.id];
     main.replaceChildren(...[await view()].flat().filter(Boolean));
   } catch (e) {
-    if (e.status !== 401) main.replaceChildren(el("p", { class: "error" }, e.message));
+    if (e.status !== 401) main.replaceChildren(el("p", { class: "body-medium error-text", style: "padding:16px" }, e.message));
   }
 }
 
@@ -356,19 +376,23 @@ const SORTS = {
   updated: ["Updated", (a, b) => b.updatedAt - a.updatedAt],
 };
 
-function metaLine(b) {
+// The app's statusLine: "43% · 4h 1m left", "Not started · 8h 52m", "Finished".
+function statusLine(b) {
   const p = progressOf(b);
   const s = statusOf(b);
-  if (s === "finished") return el("span", { class: "meta done" }, "Finished");
-  if (s === "progress") return el("span", { class: "meta" }, `${Math.round(p.fraction * 100)}% · ${fmtDuration(b.durationMs - p.positionMs)} left`);
-  return el("span", { class: "meta" }, `Not started · ${fmtDuration(b.durationMs)}`);
+  if (s === "finished") return text("label-small status primary-text", "Finished");
+  if (s === "progress") return text("label-small status variant", `${Math.round(p.fraction * 100)}% · ${fmtDuration(b.durationMs - p.positionMs)} left`);
+  return text("label-small status variant", `Not started · ${fmtDuration(b.durationMs)}`);
 }
 
-function progressBar(b) {
+function gradientProgress(fraction, thick = false) {
+  return el("div", { class: "progress" + (thick ? " thick" : ""), role: "progressbar", "aria-valuenow": Math.round(fraction * 100), "aria-valuemin": 0, "aria-valuemax": 100 },
+    el("i", { style: `width:${Math.max(1, fraction * 100).toFixed(1)}%` }));
+}
+
+function bookProgress(b) {
   const p = progressOf(b);
-  if (!p || p.finished || !p.positionMs) return null;
-  return el("div", { class: "bar", role: "progressbar", "aria-valuenow": Math.round(p.fraction * 100), "aria-valuemin": 0, "aria-valuemax": 100 },
-    el("i", { style: `width:${Math.max(2, p.fraction * 100).toFixed(1)}%` }));
+  return p && !p.finished && p.positionMs > 0 ? gradientProgress(p.fraction) : null;
 }
 
 function chip(label, on, onclick) {
@@ -379,7 +403,17 @@ async function viewLibrary() {
   await loadLibrary();
   const prefs = state.prefs;
   const shelf = el("div");
-  const count = el("span");
+  const count = text("label-large grow");
+
+  if (!state.libraries.length) {
+    return el("div", { class: "empty" },
+      el("img", { class: "mark", src: "logo.svg", alt: "" }),
+      el("h2", { class: "headline-small" }, "No libraries yet"),
+      el("p", { class: "body-medium variant" }, isAdmin()
+        ? "Point the server at a folder of audiobooks and they will show up here, and in the apps."
+        : "Whoever runs this server hasn't added a library yet."),
+      isAdmin() ? el("button", { class: "btn", type: "button", onclick: openLibraries }, icon("add"), "Add a library") : null);
+  }
 
   const fill = () => {
     const shown = state.books
@@ -387,95 +421,108 @@ async function viewLibrary() {
       .filter((b) => prefs.filter === "all" || statusOf(b) === prefs.filter)
       .filter((b) => matches(b, state.query))
       .sort((SORTS[prefs.sort] || SORTS.recent)[1]);
-    count.textContent = plural(shown.length, "title");
-    shelf.className = prefs.layout === "grid" ? "grid-view" : "list-view";
+    const total = state.books.length;
+    count.textContent = shown.length === total ? plural(total, "title") : `${shown.length} of ${total} titles`;
     if (!shown.length) {
       shelf.className = "";
-      shelf.replaceChildren(el("div", { class: "empty" }, state.books.length ? "Nothing here matches." : "No books yet. Add audiobooks to the library folder and rescan."));
+      shelf.replaceChildren(el("div", { class: "empty" }, el("p", { class: "body-medium variant" },
+        total ? "Nothing here matches." : "This library is empty. Add audiobook folders to it, then rescan.")));
       return;
     }
-    shelf.replaceChildren(...shown.map(prefs.layout === "grid" ? bookCard : bookItem));
+    shelf.className = prefs.layout === "grid" ? "card-grid" : "rows-list";
+    shelf.replaceChildren(...shown.map(prefs.layout === "grid" ? bookCard : bookRow));
   };
 
-  const filters = el("div", { class: "chips", role: "group", "aria-label": "Show" });
-  const libChips = el("div", { class: "chips", role: "group", "aria-label": "Library" });
+  const filters = el("div", { class: "chips filters", role: "group", "aria-label": "Show" });
   const drawChips = () => {
-    filters.replaceChildren(...[["all", "All"], ["progress", "In progress"], ["new", "Not started"], ["finished", "Finished"]].map(([id, label]) =>
-      chip(label, prefs.filter === id, () => { prefs.filter = id; savePrefs(); drawChips(); fill(); })));
-    libChips.replaceChildren(
-      chip("All libraries", !prefs.library, () => { prefs.library = ""; savePrefs(); drawChips(); fill(); }),
-      ...state.libraries.map((l) => chip(`${l.name} · ${l.books}`, prefs.library === l.name, () => { prefs.library = l.name; savePrefs(); drawChips(); fill(); })));
+    const chips = [["all", "All"], ["progress", "In progress"], ["new", "Not started"], ["finished", "Finished"]].map(([id, label]) =>
+      chip(label, prefs.filter === id, () => { prefs.filter = id; savePrefs(); drawChips(); fill(); }));
+    if (state.libraries.length > 1) {
+      chips.push(el("span", { style: "width:1px;background:var(--outline-variant);margin:4px 4px;flex:none" }));
+      for (const l of state.libraries) {
+        chips.push(chip(l.name, prefs.library === l.name, () => { prefs.library = prefs.library === l.name ? "" : l.name; savePrefs(); drawChips(); fill(); }));
+      }
+    }
+    filters.replaceChildren(...chips);
   };
   drawChips();
 
-  const sortLabel = el("span", {}, (SORTS[prefs.sort] || SORTS.recent)[0]);
-  const sortBtn = el("button", { class: "sort", type: "button", title: "Change the order", onclick: () => {
+  const sortLabel = text("", (SORTS[prefs.sort] || SORTS.recent)[0]);
+  const sortBtn = el("button", { class: "btn text", type: "button", title: "Sort by", onclick: () => {
     const keys = Object.keys(SORTS);
     prefs.sort = keys[(keys.indexOf(prefs.sort) + 1) % keys.length];
     sortLabel.textContent = SORTS[prefs.sort][0];
     savePrefs(); fill();
   } }, icon("sort"), sortLabel);
-  const layoutBtns = [["list", "List"], ["grid", "Grid"]].map(([id, label]) => el("button", {
+  const layoutBtns = [["list", "List"], ["grid", "Grid"]].map(([id, label], i) => el("button", {
     class: "icon-btn", type: "button", title: label, "aria-label": label, "aria-pressed": prefs.layout === id ? "true" : "false",
-    onclick: () => { prefs.layout = id; savePrefs(); layoutBtns.forEach((b, i) => b.setAttribute("aria-pressed", i === (id === "list" ? 0 : 1) ? "true" : "false")); fill(); },
+    onclick: () => { prefs.layout = id; savePrefs(); layoutBtns.forEach((b, j) => b.setAttribute("aria-pressed", i === j ? "true" : "false")); fill(); },
   }, icon(id)));
 
-  const end = el("div", { class: "end" }, sortBtn, layoutBtns);
+  // Admin actions sit in the top bar, as the app's library actions do.
   if (isAdmin()) {
-    const rescan = el("button", { class: "icon-btn", type: "button", title: "Rescan the library folders", "aria-label": "Rescan", onclick: async () => {
+    const rescan = el("button", { class: "icon-btn", type: "button", title: "Rescan libraries", "aria-label": "Rescan libraries", onclick: async () => {
       rescan.disabled = true;
       try { const r = await api("/api/rescan", { method: "POST" }); toast(`Rescanned: ${plural(r.books, "book")}`); render(); }
       catch (e) { toast(e.message); rescan.disabled = false; }
     } }, icon("refresh"));
-    end.append(rescan);
+    queueMicrotask(() => document.getElementById("top-actions")?.replaceChildren(
+      el("button", { class: "icon-btn", type: "button", title: "Libraries", "aria-label": "Libraries", onclick: openLibraries }, icon("folder")),
+      rescan));
   }
 
   const search = el("div", { class: "search" }, icon("search"),
-    el("input", { type: "search", placeholder: "Search titles, authors, narrators, series", "aria-label": "Search", value: state.query,
+    el("input", { type: "search", placeholder: "Search your library", "aria-label": "Search", value: state.query,
       oninput: (e) => { state.query = e.target.value; fill(); } }));
 
   fill();
-  return [
-    el("div", { class: "controls" }, search, filters, state.libraries.length > 1 ? libChips : null,
-      el("div", { class: "countbar" }, count, end)),
-    shelf,
-  ];
+  return [search, filters, el("div", { class: "countbar" }, count, sortBtn, layoutBtns), shelf];
 }
 
-function bookItem(b) {
-  return el("button", { class: "item", type: "button", onclick: () => openBook(b.id) },
+function bookRow(b) {
+  return el("button", { class: "book-row", type: "button", onclick: () => openBook(b.id) },
     cover(b),
     el("div", { class: "body" },
-      el("span", { class: "t" }, b.title),
-      el("span", { class: "by" }, b.author || "Unknown author"),
-      progressBar(b),
-      metaLine(b)));
+      text("title-small clip2", b.title),
+      b.author ? text("body-small variant clip", b.author) : null,
+      bookProgress(b),
+      statusLine(b)));
 }
 
 function bookCard(b) {
-  return el("button", { class: "card", type: "button", onclick: () => openBook(b.id) },
+  return el("button", { class: "book-card", type: "button", onclick: () => openBook(b.id) },
     cover(b),
-    progressBar(b) || el("div", { class: "bar", style: "visibility:hidden" }),
-    el("span", { class: "t" }, b.title),
-    el("span", { class: "by" }, b.author || "Unknown author"),
-    metaLine(b));
+    bookProgress(b),
+    text("title-small clip2", b.title),
+    b.author ? text("body-small variant clip", b.author) : null,
+    statusLine(b));
 }
+
+// ------------------------------------------------------------------ sheets
+
+function openSheet(title, parts, { onBack, wide } = {}) {
+  const lead = onBack
+    ? el("button", { class: "icon-btn", type: "button", "aria-label": "Back", title: "Back", onclick: onBack }, icon("back"))
+    : el("button", { class: "icon-btn", type: "button", "aria-label": "Close", title: "Close", onclick: () => dialog.close() }, icon("close"));
+  dialog.replaceChildren(el("div", { class: "sheet" },
+    el("div", { class: "sheet-bar" }, lead, el("h2", { class: "title-large clip" }, title || "")),
+    ...parts.filter(Boolean)));
+  dialog.style.width = wide ? "min(880px, calc(100vw - 24px))" : "";
+  if (!dialog.open) dialog.showModal();
+  dialog.scrollTop = 0;
+}
+
+dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
 
 // ------------------------------------------------------------------ one book
 
 function openBook(id, mode = "view") {
   const b = state.books.find((x) => x.id === id);
   if (!b) return;
-  const parts = mode === "edit" ? bookEditor(b) : mode === "match" ? bookMatcher(b) : bookDetail(b);
-  const back = mode === "view"
-    ? el("button", { class: "icon-btn", type: "button", "aria-label": "Close", title: "Close", onclick: () => dialog.close() }, icon("down"))
-    : el("button", { class: "icon-btn", type: "button", "aria-label": "Back", title: "Back", onclick: () => openBook(b.id) }, icon("back"));
-  dialog.replaceChildren(el("div", { class: "sheet" }, el("div", { class: "sheet-top" }, back), ...parts.filter(Boolean)));
-  if (!dialog.open) dialog.showModal();
-  dialog.scrollTop = 0;
+  if (mode === "edit") return openSheet("Edit details", bookEditor(b), { onBack: () => openBook(id) });
+  if (mode === "match") return openSheet("Find details", bookMatcher(b), { onBack: () => openBook(id) });
+  openSheet("", bookDetail(b), { wide: true });
 }
-
-dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
 
 function currentChapter(b, p) {
   if (!p || p.finished || !b.chapters.length) return -1;
@@ -486,13 +533,13 @@ function bookDetail(b) {
   const p = progressOf(b);
   const byline = [b.author, b.narrator ? "read by " + b.narrator : ""].filter(Boolean).join(" · ");
   const tags = [
-    b.series ? `${b.series}${b.seriesIndex != null ? ", book " + b.seriesIndex : ""}` : "",
+    b.series ? `${b.series}${b.seriesIndex != null ? " #" + b.seriesIndex : ""}` : "",
     fmtDuration(b.durationMs), b.publishedYear, ...(b.genres || []).slice(0, 4),
     state.libraries.length > 1 ? b.library : "",
   ].filter(Boolean);
 
   const size = b.files.reduce((n, f) => n + (f.sizeBytes || 0), 0);
-  const download = el("button", { class: "btn primary", type: "button", onclick: async () => {
+  const download = el("button", { class: "btn", type: "button", onclick: async () => {
     download.disabled = true;
     try {
       const link = await api(`/api/books/${encodeURIComponent(b.id)}/download-link`, { method: "POST" });
@@ -501,26 +548,23 @@ function bookDetail(b) {
     } catch (e) { toast(e.message); }
     download.disabled = false;
   } }, icon("download"), `Download · ${fmtBytes(size)}`);
-  const actions = el("div", { class: "row actions", style: "margin-top:1.1rem" }, download);
+  const actions = el("div", { class: "row", style: "margin-top:16px" }, download);
   if (isAdmin()) {
     actions.append(
       el("button", { class: "btn tonal", type: "button", onclick: () => openBook(b.id, "match") }, icon("magic"), "Find details"),
-      el("button", { class: "btn tonal", type: "button", onclick: () => openBook(b.id, "edit") }, icon("edit"), "Edit"));
+      el("button", { class: "btn outlined", type: "button", onclick: () => openBook(b.id, "edit") }, icon("edit"), "Edit"));
   }
 
-  let progress = null;
   const cur = currentChapter(b, p);
-  if (p && (p.positionMs > 0 || p.finished)) {
-    progress = el("div", { class: "panel-card progress-card" },
-      cur >= 0 ? el("div", {}, el("div", {}, b.chapters[cur].title), el("div", { class: "small muted" }, `${cur + 1} of ${b.chapters.length}`)) : null,
-      el("div", { class: "bar" }, el("i", { style: `width:${Math.max(2, p.fraction * 100).toFixed(1)}%` })),
-      el("div", { class: "line" },
-        el("span", {}, p.finished ? "Finished" : fmtClock(p.positionMs)),
-        el("span", {}, p.finished ? (p.finishedAt ? fmtDate(p.finishedAt) : "") : `${fmtDuration(b.durationMs - p.positionMs)} left in book`),
-        el("span", {}, p.startedAt ? "Started " + fmtDate(p.startedAt) : "")));
-  }
+  const progress = p && (p.positionMs > 0 || p.finished) ? el("div", { class: "panel wash stack" },
+    cur >= 0 ? el("div", {}, text("title-small", b.chapters[cur].title), el("div", { class: "body-small variant" }, `${cur + 1} of ${b.chapters.length}`)) : null,
+    gradientProgress(p.finished ? 1 : p.fraction, true),
+    el("div", { class: "row label-medium variant", style: "justify-content:space-between" },
+      text("", p.finished ? "Finished" + (p.finishedAt ? " " + fmtDate(p.finishedAt) : "") : fmtClock(p.positionMs)),
+      p.finished ? null : text("", `${fmtDuration(b.durationMs - p.positionMs)} left in book`),
+      text("", p.startedAt ? "Started " + fmtDate(p.startedAt) : ""))) : null;
 
-  const facts = el("dl", { class: "facts" });
+  const facts = el("dl", { class: "facts body-medium" });
   const fact = (k, v) => v && facts.append(el("dt", {}, k), el("dd", {}, v));
   fact("Publisher", b.publisher);
   fact("Language", b.language);
@@ -529,22 +573,22 @@ function bookDetail(b) {
 
   return [
     el("div", { class: "hero" }, cover(b), el("div", {},
-      el("h2", {}, b.title),
-      b.subtitle ? el("div", { class: "sub" }, b.subtitle) : null,
-      el("div", { class: "who-line muted" }, byline || "Unknown author"),
-      el("div", { class: "pill-row" }, tags.map((t) => el("span", { class: "tag" }, t))),
+      el("h2", { class: "headline-small" }, b.title),
+      b.subtitle ? el("p", { class: "title-medium variant", style: "font-weight:400" }, b.subtitle) : null,
+      el("p", { class: "body-medium variant", style: "margin-top:4px" }, byline || "Unknown author"),
+      el("div", { class: "tags" }, tags.map((t) => el("span", { class: "tag" }, t))),
       actions)),
     progress,
     b.description ? el("p", { class: "desc" }, b.description) : null,
-    facts.childElementCount ? el("div", { class: "panel-card" }, facts) : null,
-    b.chapters.length ? el("details", { class: "panel-card" },
-      el("summary", {}, icon("chapters"), plural(b.chapters.length, "chapter"), el("span", { class: "muted small", style: "margin-left:auto" }, cur >= 0 ? `you're on ${cur + 1}` : "")),
-      el("div", { class: "rows" }, b.chapters.map((c, i) => el("div", { class: i === cur ? "accent" : "" },
-        el("span", { class: "n" }, i + 1), el("span", { class: "grow" }, c.title), el("span", { class: "end" }, fmtClock(c.startMs)))))) : null,
-    el("details", { class: "panel-card" },
-      el("summary", {}, icon("files"), plural(b.files.length, "file"), el("span", { class: "muted small", style: "margin-left:auto" }, fmtBytes(size))),
-      el("div", { class: "rows" }, b.files.map((f, i) => el("div", {},
-        el("span", { class: "n" }, i + 1), el("span", { class: "grow" }, f.name), el("span", { class: "end" }, fmtDuration(f.durationMs), " · ", fmtBytes(f.sizeBytes)))))),
+    facts.childElementCount ? el("div", { class: "panel" }, facts) : null,
+    b.chapters.length ? el("details", { class: "panel" },
+      el("summary", {}, icon("chapters"), text("title-small grow", plural(b.chapters.length, "chapter")), cur >= 0 ? text("label-medium variant", `on ${cur + 1}`) : null),
+      el("div", { class: "lines body-medium" }, b.chapters.map((c, i) => el("div", { class: i === cur ? "now" : "" },
+        text("n", i + 1), text("t", c.title), text("end", fmtClock(c.startMs)))))) : null,
+    el("details", { class: "panel" },
+      el("summary", {}, icon("files"), text("title-small grow", plural(b.files.length, "file")), text("label-medium variant", fmtBytes(size))),
+      el("div", { class: "lines body-medium" }, b.files.map((f, i) => el("div", {},
+        text("n", i + 1), text("t clip", f.name), text("end", fmtDuration(f.durationMs), " · ", fmtBytes(f.sizeBytes)))))),
   ];
 }
 
@@ -579,14 +623,15 @@ function bookEditor(b) {
     if (d) body.description = d;
     await saveMetadata(b, body);
   } },
-  FIELDS.map(([k, label]) => el("label", {}, label, inputs[k] = el("input", { type: k === "seriesIndex" ? "number" : "text", step: "any", value: initial[k] ?? "" }))),
-  el("label", { class: "wide" }, "Description", desc),
-  el("p", { class: "wide note" }, "Saved details are kept in the server's data folder and take priority over the files. Reset brings back what the library says."),
+  FIELDS.map(([k, label]) => el("label", { class: "field" }, el("span", {}, label), inputs[k] = el("input", { type: k === "seriesIndex" ? "number" : "text", step: "any", value: initial[k] ?? "" }))),
+  el("label", { class: "field wide" }, el("span", {}, "Description"), desc),
+  el("p", { class: "wide body-small variant" }, "Saved details are kept in the server's data folder and take priority over the files. Reset brings back what the library says."),
   el("div", { class: "row wide" },
-    el("button", { class: "btn primary", type: "submit" }, "Save"),
-    el("button", { class: "btn", type: "button", onclick: () => openBook(b.id) }, "Cancel"),
-    el("button", { class: "btn danger", type: "button", style: "margin-left:auto", onclick: () => resetMetadata(b) }, "Reset to library")));
-  return [el("h2", {}, "Edit details"), form];
+    el("button", { class: "btn text danger", type: "button", onclick: () => resetMetadata(b) }, "Reset to library"),
+    el("span", { class: "grow" }),
+    el("button", { class: "btn text", type: "button", onclick: () => openBook(b.id) }, "Cancel"),
+    el("button", { class: "btn", type: "submit" }, "Save")));
+  return [form];
 }
 
 async function saveMetadata(b, body) {
@@ -617,34 +662,33 @@ function replaceBook(updated) {
 function bookMatcher(b) {
   const providers = [["audible", "Audible"], ["openlibrary", "Open Library"], ["google", "Google Books"]];
   let provider = "audible";
-  const region = el("select", { "aria-label": "Audible region", onchange: () => search() },
+  const region = el("select", { "aria-label": "Audible region", style: "width:auto;height:40px", onchange: () => search() },
     ["us", "uk", "ca", "au", "de", "fr", "it", "es", "in", "jp"].map((r) => el("option", { value: r }, r.toUpperCase())));
   const providerChips = el("div", { class: "segmented", role: "group", "aria-label": "Provider" });
   const drawProviders = () => providerChips.replaceChildren(...providers.map(([id, label]) =>
     chip(label, provider === id, () => { provider = id; region.hidden = id !== "audible"; drawProviders(); search(); })));
   drawProviders();
-  const title = el("input", { type: "text", value: b.title, "aria-label": "Title" });
-  const author = el("input", { type: "text", value: (b.author || "").split(",")[0], "aria-label": "Author" });
-  const results = el("div", { class: "results" });
+  const title = el("input", { type: "text", value: b.title, "aria-label": "Title", placeholder: "Title" });
+  const author = el("input", { type: "text", value: (b.author || "").split(",")[0], "aria-label": "Author", placeholder: "Author" });
+  const results = el("div", { class: "stack" });
   async function search(ev) {
     ev?.preventDefault();
-    results.replaceChildren(el("p", { class: "muted" }, "Searching…"));
+    results.replaceChildren(el("p", { class: "body-medium variant" }, "Searching…"));
     const q = new URLSearchParams({ provider, title: title.value, author: author.value });
     if (provider === "audible") q.set("region", region.value);
     try {
       const out = await api(`/api/books/${encodeURIComponent(b.id)}/match?` + q);
-      results.replaceChildren(...(out.results.length ? out.results.map((c) => matchResult(b, c)) : [el("p", { class: "muted" }, "Nothing found. Try a shorter title or another provider.")]));
+      results.replaceChildren(...(out.results.length ? out.results.map((c) => matchResult(b, c)) : [el("p", { class: "body-medium variant" }, "Nothing found. Try a shorter title or another provider.")]));
     } catch (e) {
-      results.replaceChildren(el("p", { class: "error" }, e.message));
+      results.replaceChildren(el("p", { class: "body-medium error-text" }, e.message));
     }
   }
   const form = el("form", { class: "row", onsubmit: search },
     el("div", { class: "grow" }, title), el("div", { class: "grow" }, author),
-    el("button", { class: "btn primary", type: "submit" }, icon("search"), "Search"));
+    el("button", { class: "btn", type: "submit" }, icon("search"), "Search"));
   queueMicrotask(search);
   return [
-    el("div", {}, el("h2", {}, "Find details"), el("p", { class: "muted small", style: "margin:0" },
-      "The server asks the provider only when you search. The result you pick, and its cover, replace what the library says until you reset it.")),
+    el("p", { class: "body-medium variant" }, "The server asks the provider only when you search. The result you pick, and its cover, replace what the library says until you reset it."),
     el("div", { class: "row" }, providerChips, region),
     form,
     results,
@@ -655,29 +699,102 @@ function matchResult(b, c) {
   const series = c.series ? ` · ${c.series}${c.seriesIndex != null ? " #" + c.seriesIndex : ""}` : "";
   const keepCover = el("input", { type: "checkbox", checked: !!c.coverUrl, disabled: !c.coverUrl });
   return el("div", { class: "result" },
-    c.coverUrl ? el("img", { src: c.coverUrl, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : madeCover(c, "cover"),
-    el("div", {},
-      el("strong", {}, c.title), c.subtitle ? el("span", { class: "muted" }, ": ", c.subtitle) : null,
-      el("div", { class: "small" }, (c.authors || []).join(", "), c.narrators?.length ? " · read by " + c.narrators.join(", ") : ""),
-      el("div", { class: "small muted" }, [c.publishedYear, c.publisher].filter(Boolean).join(", "), series, c.durationMs ? " · " + fmtDuration(c.durationMs) : "")),
+    c.coverUrl ? el("img", { src: c.coverUrl, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : el("div", { class: "cover blank" }, (c.title || "").slice(0, 2)),
+    el("div", { style: "min-width:0" },
+      el("div", { class: "title-small" }, c.title, c.subtitle ? text("variant", ": " + c.subtitle) : null),
+      el("div", { class: "body-small" }, (c.authors || []).join(", "), c.narrators?.length ? " · read by " + c.narrators.join(", ") : ""),
+      el("div", { class: "body-small variant" }, [c.publishedYear, c.publisher].filter(Boolean).join(", "), series, c.durationMs ? " · " + fmtDuration(c.durationMs) : "")),
     el("div", { class: "row" },
-      c.coverUrl ? el("label", { class: "check small" }, keepCover, "Cover") : null,
-      el("button", { class: "btn primary small", type: "button", onclick: () => {
+      c.coverUrl ? el("label", { class: "check label-medium" }, keepCover, "Cover") : null,
+      el("button", { class: "btn small", type: "button", onclick: () => {
         const body = { ...c };
         if (!keepCover.checked) delete body.coverUrl;
         saveMetadata(b, body);
       } }, "Use")));
 }
 
-// ------------------------------------------------------------------ listening
+// ------------------------------------------------------------------ libraries (admin): the app's Sources screen
+
+async function openLibraries() {
+  let libs;
+  try { ({ libraries: libs } = await api("/api/libraries")); } catch (e) { toast(e.message); return; }
+  const remove = async (l) => {
+    if (!confirm(`Remove ${l.name}? Its books disappear from the server and every device. The files stay where they are, and adding the folder back brings the books and everyone's places back.`)) return;
+    try {
+      await api("/api/libraries/" + encodeURIComponent(l.name), { method: "DELETE" });
+      toast(`Removed ${l.name}`);
+      afterLibraryChange();
+    } catch (e) { toast(e.message); }
+  };
+  const cards = libs.map((l) => el("div", { class: "source" + (l.error ? " bad" : "") },
+    el("span", { class: "ico" }, icon("folder")),
+    el("div", { class: "grow" },
+      el("div", { class: "title-medium" }, l.name),
+      el("div", { class: "body-small variant clip", title: l.path }, l.error ? "Can't read the folder: " + l.error : `${plural(l.books, "title")} · ${fmtDuration(l.durationMs)}`),
+      el("div", { class: "body-small variant clip", title: l.path }, l.path),
+      l.fixed ? el("div", { class: "label-small variant", style: "margin-top:4px" }, "Set on the server's command line") : null),
+    l.fixed ? null : el("button", { class: "icon-btn", type: "button", title: `Remove ${l.name}`, "aria-label": `Remove ${l.name}`, onclick: () => remove(l) }, icon("remove"))));
+
+  const picker = el("div");
+  const addFolder = el("button", { class: "add-option", type: "button", onclick: () => { addFolder.hidden = true; showPicker(picker, ""); } },
+    icon("folder"),
+    el("div", { class: "grow" }, el("div", { class: "title-small t" }, "Folder on this server"),
+      el("div", { class: "body-small variant" }, "Audiobooks the server can already see: a disk, a share, a mounted volume")));
+
+  openSheet("Libraries", [
+    libs.length ? el("div", { class: "stack" }, cards) : el("p", { class: "body-medium variant" }, "No libraries yet."),
+    el("h3", { class: "title-medium", style: "margin-top:8px" }, "Add a library"),
+    addFolder,
+    picker,
+    el("p", { class: "body-small variant" }, "Running in Docker? Only folders mounted into the container can be added. On the command line: kithara-server library add NAME DIR."),
+  ]);
+}
+
+async function afterLibraryChange() {
+  await openLibraries();
+  if (state.view === "library") refreshMain(viewLibrary);
+}
+
+// A folder picker over the server's own disk (admins only; it lists folder names).
+async function showPicker(box, path) {
+  let here;
+  try { here = await api("/api/fs" + (path ? "?path=" + encodeURIComponent(path) : "")); }
+  catch (e) { toast(e.message); return; }
+  const name = el("input", { type: "text", value: here.path.split(here.separator).filter(Boolean).pop() || "", placeholder: "Library name" });
+  const typed = el("input", { type: "text", value: here.path, "aria-label": "Folder path", style: "height:40px;border:0;padding:0 4px;font-size:14px",
+    onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); showPicker(box, typed.value.trim()); } } });
+  const add = el("button", { class: "btn", type: "button", onclick: async () => {
+    add.disabled = true;
+    try {
+      await api("/api/libraries", { method: "POST", body: { name: name.value.trim(), path: here.path } });
+      toast(`Added ${name.value.trim() || here.path}`);
+      afterLibraryChange();
+    } catch (e) { toast(e.message); add.disabled = false; }
+  } }, icon("add"), "Add this folder");
+  box.replaceChildren(el("div", { class: "stack" },
+    el("div", { class: "picker" },
+      el("div", { class: "here" },
+        el("button", { class: "icon-btn", type: "button", title: "Up", "aria-label": "Up one folder", disabled: here.parent ? null : true, onclick: () => showPicker(box, here.parent) }, icon("up")),
+        el("div", { class: "grow" }, typed)),
+      el("div", { class: "list" },
+        here.dirs.length ? here.dirs.map((d) => el("button", { class: "dir", type: "button", onclick: () => showPicker(box, d.path) },
+          el("span", { class: "ico" }, icon("folder")), text("body-medium grow clip", d.name))) :
+          el("p", { class: "body-medium variant", style: "padding:12px 16px" }, "No folders in here."))),
+    el("p", { class: "body-small variant" }, here.audio ? `${plural(here.audio, "audio file")} directly in this folder. Pick the folder above your books if this is one book.` : "Each book can be a folder of audio files, or a single file; any nesting above that is fine."),
+    el("div", { class: "row" }, el("label", { class: "field grow" }, el("span", {}, "Name"), name)),
+    el("div", { class: "row end" }, el("button", { class: "btn text", type: "button", onclick: () => openLibraries() }, "Cancel"), add)));
+}
+
+// ------------------------------------------------------------------ listening (StatsScreen)
 
 async function viewStats() {
   const tz = -new Date().getTimezoneOffset();
   const [st] = await Promise.all([api("/api/stats?tzOffset=" + tz), state.books.length ? null : loadLibrary()]);
   const byId = new Map(state.books.map((b) => [b.id, b]));
-  const tile = (k, v) => el("div", { class: "tile" }, el("div", { class: "k" }, k), el("div", { class: "v" }, v));
+  const tile = (k, v) => el("div", { class: "card variant-bg" }, text("label-medium", k), text("v", v));
 
-  // The last 30 days, today included and in gold, gaps as empty bars.
+  // The last 30 days, today included: listened days in primary-container, today in
+  // primary, the rest surface-variant, as the app's bars.
   const days = new Map(st.days.map((d) => [d.date, d.listenedMs]));
   const series = [];
   for (let i = 29; i >= 0; i--) {
@@ -688,38 +805,34 @@ async function viewStats() {
   const month = series.reduce((n, [, ms]) => n + ms, 0);
   const activeDays = series.filter(([, ms]) => ms > 0).length;
   const chart = el("div", { class: "chart", role: "img", "aria-label": "Listening per day, last 30 days" },
-    series.map(([d, ms, today]) => el("div", { class: today ? "today" : ms ? "" : "zero", style: `height:${Math.max(2, (ms / peak) * 100)}%`, title: `${d}: ${fmtDuration(ms)}` })));
+    series.map(([d, ms, today]) => el("div", { class: today && ms ? "today" : ms ? "" : "zero", style: `height:${Math.max(2, (ms / peak) * 100)}%`, title: `${d}: ${fmtDuration(ms)}` })));
 
   const avg = st.daysListened ? st.totalListenedMs / st.daysListened : 0;
-  return [
-    el("div", { class: "big" },
-      el("div", {}, "Last 30 days"),
-      el("div", { class: "v" }, fmtDuration(month)),
-      el("div", { class: "k" }, `${plural(activeDays, "day")} with listening · ${fmtDuration(st.totalListenedMs)} all time`)),
-    el("div", { class: "tiles" },
+  return el("div", { class: "stats" },
+    el("div", { class: "card hero-card" },
+      text("label-large", "Last 30 days"),
+      text("display-small", fmtDuration(month)),
+      text("body-small primary-text", `${plural(activeDays, "day")} with listening · ${fmtDuration(st.totalListenedMs)} all time`)),
+    el("div", { class: "stat-tiles" },
       tile("Streak", plural(st.currentStreakDays, "day")),
       tile("Longest streak", plural(st.longestStreakDays, "day")),
-      tile("Average per listening day", fmtDuration(avg)),
       tile("Days listened", st.daysListened),
+      tile("Average per day", fmtDuration(avg)),
       tile("Books finished", plural(st.booksFinished, "book")),
       tile("Books started", plural(st.booksStarted, "book"))),
-    el("section", {},
-      el("div", { class: "section-head" }, el("h2", {}, "By day")),
-      chart,
-      el("div", { class: "chart-axis" }, el("span", {}, fmtDate(Date.parse(series[0][0]))), el("span", {}, "today"))),
-    el("section", {},
-      el("div", { class: "section-head" }, el("h2", {}, "Recently listened")),
-      st.books.length ? el("div", {}, st.books.slice(0, 12).map((r) => {
-        const b = byId.get(r.bookId);
-        return el("div", { class: "book-row" },
-          b ? cover(b) : el("div", { class: "cover" }),
-          el("div", { style: "min-width:0" },
-            el("div", { class: "t" }, b?.title || "A book no longer in your library"),
-            el("div", { class: "small muted" }, r.finishedAt ? `Finished ${fmtDate(r.finishedAt)}` : `Last listened ${relative(r.lastListenedAt)}`)),
-          el("div", { class: "meta" }, fmtDuration(r.listenedMs)));
-      })) : el("p", { class: "muted" }, "Nothing yet. Listening time appears here as the apps sync."),
-      el("p", { class: "note" }, "Worked out from the apps' progress syncs, so these figures are an estimate and lean low.")),
-  ];
+    el("h2", { class: "title-medium section-title" }, "By day"),
+    el("div", {}, chart, el("div", { class: "axis label-small variant" }, text("", fmtDate(Date.parse(series[0][0]))), text("", "Today"))),
+    el("h2", { class: "title-medium section-title" }, "Most time spent"),
+    st.books.length ? el("div", {}, [...st.books].sort((a, b) => b.listenedMs - a.listenedMs).slice(0, 10).map((r) => {
+      const b = byId.get(r.bookId);
+      return el("div", { class: "most" },
+        b ? cover(b) : el("div", { class: "cover-box" }, el("div", { class: "cover blank" }, "?")),
+        el("div", { class: "grow" },
+          el("div", { class: "body-medium clip" }, b?.title || "A book no longer in your library"),
+          el("div", { class: "label-small variant" }, r.finishedAt ? `Finished ${fmtDate(r.finishedAt)}` : `Last listened ${relative(r.lastListenedAt)}`)),
+        text("label-medium variant", fmtDuration(r.listenedMs)));
+    })) : el("p", { class: "body-medium variant" }, "Nothing yet. Listening time appears here as the apps sync."),
+    el("p", { class: "body-small variant", style: "margin-top:8px" }, "Worked out from the apps' progress syncs, so these figures are an estimate and lean low."));
 }
 
 // ------------------------------------------------------------------ devices
@@ -739,7 +852,7 @@ async function viewDevices(who = state.me.name) {
   if (isAdmin()) {
     const { users } = await api("/api/users");
     if (users.length > 1) {
-      out.push(el("div", { class: "chips", style: "margin-bottom:1rem", role: "group", "aria-label": "Whose devices" },
+      out.push(el("div", { class: "chips", style: "margin-bottom:8px", role: "group", "aria-label": "Whose devices" },
         users.map((u) => chip(u.name === state.me.name ? "You" : u.name, u.name === who, () => refreshMain(() => viewDevices(u.name))))));
     }
   }
@@ -752,13 +865,14 @@ async function viewDevices(who = state.me.name) {
       refreshMain(() => viewDevices(who));
     } catch (e) { toast(e.message); }
   };
-  out.push(devices.length ? el("div", { class: "cards" }, devices.map((d) => el("div", { class: "dev" },
-    el("div", { class: "ico" }, icon(deviceIcon(d.name))),
-    el("div", {},
-      el("div", { class: "name" }, d.name || "Unnamed device", d.current ? el("span", { class: "badge" }, "This browser") : null),
-      el("div", { class: "small muted" }, `Signed in ${fmtDate(d.createdAt)} · last seen ${relative(d.lastSeenAt)}`)),
-    el("button", { class: "btn small danger", type: "button", onclick: () => revoke(d) }, "Sign out")))) : el("p", { class: "empty" }, "No devices signed in."));
-  out.push(el("p", { class: "note" }, "Signing a device out makes it ask for the password again. Changing a password signs out every device."));
+  out.push(devices.length ? el("div", { class: "stack" }, devices.map((d) => el("div", { class: "item-card" },
+    el("span", { class: "ico" }, icon(deviceIcon(d.name))),
+    el("div", { class: "body" },
+      el("div", { class: "title-medium" }, d.name || "Unnamed device", d.current ? el("span", { class: "badge" }, "This browser") : null),
+      el("div", { class: "body-small variant" }, `Signed in ${fmtDate(d.createdAt)} · last seen ${relative(d.lastSeenAt)}`)),
+    el("button", { class: "btn text danger", type: "button", onclick: () => revoke(d) }, "Sign out")))) :
+    el("p", { class: "body-medium variant" }, "No devices signed in."));
+  out.push(el("p", { class: "body-small variant", style: "margin-top:12px" }, "Signing a device out makes it ask for the password again. Changing a password signs out every device."));
   return out;
 }
 
@@ -789,38 +903,38 @@ async function viewUsers() {
     draw();
     return { node, value: () => value };
   };
-  const caption = (text) => el("div", { class: "small muted", style: "margin-bottom:.35rem" }, text);
+  const caption = (t) => el("div", { class: "label-medium variant", style: "margin-bottom:4px" }, t);
 
   const cards = users.map((u) => {
     const libs = libraryPicker(u.libraries || []);
     const libsRow = el("div", { hidden: u.role === "admin" || libraries.length < 2 ? true : null }, caption("Can see"), libs.node);
     const role = rolePicker(u.role, (v) => { libsRow.hidden = v === "admin" || libraries.length < 2; });
-    const save = el("button", { class: "btn small primary", type: "button", onclick: async () => {
+    const save = el("button", { class: "btn tonal small", type: "button", onclick: async () => {
       try {
         await api("/api/users/" + encodeURIComponent(u.name), { method: "PATCH", body: { role: role.value(), libraries: libs.value() } });
         toast("Saved " + u.name);
         if (u.name === state.me.name) { state.me = await api("/api/me"); render(); } else rerender();
       } catch (e) { toast(e.message); }
     } }, "Save");
-    const password = el("button", { class: "btn small", type: "button", onclick: async () => {
+    const password = el("button", { class: "btn text", type: "button", onclick: async () => {
       const pw = prompt(`New password for ${u.name} (8 or more characters). Their devices will be signed out.`);
       if (!pw) return;
       try { await api("/api/users/" + encodeURIComponent(u.name), { method: "PATCH", body: { password: pw } }); toast("Password changed"); rerender(); }
       catch (e) { toast(e.message); }
-    } }, "Password…");
-    const remove = u.name === state.me.name ? null : el("button", { class: "btn small danger", type: "button", onclick: async () => {
+    } }, "Password");
+    const remove = u.name === state.me.name ? null : el("button", { class: "btn text danger", type: "button", onclick: async () => {
       if (!confirm(`Remove ${u.name}? Their devices are signed out; their listening history is kept aside on the server.`)) return;
       try { await api("/api/users/" + encodeURIComponent(u.name), { method: "DELETE" }); toast("Removed " + u.name); rerender(); }
       catch (e) { toast(e.message); }
     } }, "Remove");
     const access = u.role === "admin" ? "Admin · sees everything" : u.libraries?.length ? "Sees " + u.libraries.join(", ") : "Sees every library";
-    return el("div", { class: "user" },
-      el("div", { class: "avatar", "aria-hidden": "true" }, u.name.slice(0, 1)),
-      el("div", {},
-        el("div", { class: "name" }, u.name, u.name === state.me.name ? el("span", { class: "badge plain" }, "You") : null),
-        el("div", { class: "small muted" }, `${access} · ${plural(u.devices, "device")}`)),
-      el("div", { class: "row actions" }, password, remove),
-      el("div", { class: "settings" }, el("div", { class: "row" }, role.node, save), libsRow));
+    return el("div", { class: "item-card" },
+      el("span", { class: "avatar", style: "width:40px;height:40px;font-size:16px" }, u.name.slice(0, 1)),
+      el("div", { class: "body" },
+        el("div", { class: "title-medium" }, u.name, u.name === state.me.name ? el("span", { class: "badge" }, "You") : null),
+        el("div", { class: "body-small variant" }, `${access} · ${plural(u.devices, "device")}`)),
+      el("div", { class: "row" }, password, remove),
+      el("div", { class: "more" }, el("div", { class: "row" }, role.node, save), libsRow));
   });
 
   const name = el("input", { type: "text", required: true, autocomplete: "off", pattern: "[A-Za-z0-9._@\\-]{1,64}", title: "Letters, digits and . _ @ -" });
@@ -836,16 +950,17 @@ async function viewUsers() {
       rerender();
     } catch (e) { toast(e.message); }
   } },
-  el("label", {}, "User name", name),
-  el("label", {}, "Password (8 or more characters)", pass),
+  el("label", { class: "field" }, el("span", {}, "User name"), name),
+  el("label", { class: "field" }, el("span", {}, "Password (8 or more characters)"), pass),
   el("div", { class: "wide" }, caption("Role"), newRole.node),
   newLibsRow,
-  el("div", { class: "wide" }, el("button", { class: "btn primary", type: "submit" }, "Add user")));
+  el("div", { class: "wide row end" }, el("button", { class: "btn", type: "submit" }, icon("add"), "Add user")));
 
   return [
-    el("section", {}, el("div", { class: "cards" }, cards),
-      el("p", { class: "note" }, "Listeners see only the libraries chosen for them, on every device. Admins can rescan, edit details and manage users.")),
-    el("section", { class: "panel-card" }, el("h2", {}, "Add a user"), add),
+    el("div", { class: "stack" }, cards),
+    el("p", { class: "body-small variant", style: "margin:12px 0 0" }, "Listeners see only the libraries chosen for them, on every device. Admins can add libraries, rescan, edit details and manage users."),
+    el("h2", { class: "title-medium section-title" }, "Add a user"),
+    el("div", { class: "card pad" }, add),
   ];
 }
 
@@ -860,6 +975,8 @@ async function start() {
 
 (async () => {
   loadPrefs();
+  applyTheme();
+  matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", applyTheme);
   try { state.server = await api("/api/health"); } catch { /* shown as "Kithara" */ }
   document.title = state.server?.name ? `${state.server.name} · Kithara` : "Kithara";
   state.token = loadToken();

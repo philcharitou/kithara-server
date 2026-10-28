@@ -533,3 +533,109 @@ func TestAudibleAuthor(t *testing.T) {
 		}
 	}
 }
+
+func TestLibrariesAddedAtRunTime(t *testing.T) {
+	data := t.TempDir()
+	books, extra := testLibrary(t), t.TempDir()
+	audio, _ := os.ReadFile(sampleAudio(t))
+	os.MkdirAll(filepath.Join(extra, "Talks", "One"), 0o755)
+	os.WriteFile(filepath.Join(extra, "Talks", "One", "one.m4b"), audio, 0o644)
+	st, _ := openStore(data)
+	st.setPassword("phil", "correct horse")
+	st.setPassword("kid", "battery staple")
+	lib := newLibraries([]libSpec{{Name: "Audiobooks", Path: books}}, data)
+	if err := lib.rescan(); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(newServer(st, lib, "Test"))
+	t.Cleanup(ts.Close)
+	admin := loginAs(t, ts, "phil", "correct horse", "laptop")
+	kid := loginAs(t, ts, "kid", "battery staple", "tablet")
+
+	talks := filepath.Join(extra, "Talks")
+	for name, body := range map[string]map[string]string{
+		"relative path":  {"path": "Talks"},
+		"missing folder": {"path": filepath.Join(extra, "nope")},
+		"inside another": {"path": filepath.Join(books, "Winter Counting")},
+		"around another": {"path": filepath.Dir(books)},
+		"a file":         {"path": filepath.Join(talks, "One", "one.m4b")},
+	} {
+		if res, out := call(t, ts, "POST", "/api/libraries", admin, body); res.StatusCode != 400 {
+			t.Errorf("%s: %d %s", name, res.StatusCode, out)
+		}
+	}
+	if res, _ := call(t, ts, "POST", "/api/libraries", kid, map[string]string{"path": talks}); res.StatusCode != 403 {
+		t.Fatalf("a plain user adding a library gave %d", res.StatusCode)
+	}
+	res, out := call(t, ts, "POST", "/api/libraries", admin, map[string]string{"name": "Lectures", "path": talks})
+	if res.StatusCode != 201 || !strings.Contains(string(out), `"books":1`) {
+		t.Fatalf("add: %d %s", res.StatusCode, out)
+	}
+	if res, _ := call(t, ts, "POST", "/api/libraries", admin, map[string]string{"name": "lectures", "path": extra}); res.StatusCode != 400 && res.StatusCode != 409 {
+		t.Fatalf("a second library overlapping or named alike gave %d", res.StatusCode)
+	}
+	if n := len(catalogueOf(t, ts, admin, "").Books); n != 5 {
+		t.Fatalf("after adding: %d books", n)
+	}
+	// Paths are for admins only.
+	_, out = call(t, ts, "GET", "/api/libraries", kid, nil)
+	if strings.Contains(string(out), talks) || !strings.Contains(string(out), "Lectures") {
+		t.Fatalf("kid's libraries: %s", out)
+	}
+	_, out = call(t, ts, "GET", "/api/libraries", admin, nil)
+	if !strings.Contains(string(out), `"fixed":true`) {
+		t.Fatalf("admin's libraries: %s", out)
+	}
+	// It survives a restart, from libraries.json.
+	again := newLibraries([]libSpec{{Name: "Audiobooks", Path: books}}, data)
+	if err := again.rescan(); err != nil || again.count() != 5 {
+		t.Fatalf("after restart: %d books, %v", again.count(), err)
+	}
+
+	if res, _ := call(t, ts, "DELETE", "/api/libraries/Audiobooks", admin, nil); res.StatusCode != 409 {
+		t.Fatalf("removing a command-line library gave %d", res.StatusCode)
+	}
+	if res, _ := call(t, ts, "DELETE", "/api/libraries/Lectures", admin, nil); res.StatusCode != 204 {
+		t.Fatalf("remove gave %d", res.StatusCode)
+	}
+	if n := len(catalogueOf(t, ts, admin, "").Books); n != 4 {
+		t.Fatalf("after removing: %d books", n)
+	}
+
+	// The command line edits the same file; the running server takes it in on a rescan.
+	cli := newLibraries(nil, data)
+	if err := cli.storeLibrary("Lectures", talks); err != nil {
+		t.Fatal(err)
+	}
+	call(t, ts, "POST", "/api/rescan", admin, nil)
+	if n := len(catalogueOf(t, ts, admin, "").Books); n != 5 {
+		t.Fatalf("after a command-line add and a rescan: %d books", n)
+	}
+}
+
+func TestBrowseFolders(t *testing.T) {
+	ts, _, _, _ := twoLibraryServer(t)
+	admin := loginAs(t, ts, "phil", "correct horse", "laptop")
+	kid := loginAs(t, ts, "kid", "battery staple", "tablet")
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "Books"), 0o755)
+	os.MkdirAll(filepath.Join(root, ".hidden"), 0o755)
+	os.WriteFile(filepath.Join(root, "track.mp3"), []byte("x"), 0o644)
+
+	if res, _ := call(t, ts, "GET", "/api/fs?path="+url.QueryEscape(root), kid, nil); res.StatusCode != 403 {
+		t.Fatalf("a plain user browsing gave %d", res.StatusCode)
+	}
+	res, out := call(t, ts, "GET", "/api/fs?path="+url.QueryEscape(root), admin, nil)
+	var got struct {
+		Path, Parent string
+		Audio        int
+		Dirs         []struct{ Name, Path string }
+	}
+	json.Unmarshal(out, &got)
+	if res.StatusCode != 200 || len(got.Dirs) != 1 || got.Dirs[0].Name != "Books" || got.Audio != 1 || got.Parent == "" {
+		t.Fatalf("browse: %d %s", res.StatusCode, out)
+	}
+	if res, _ := call(t, ts, "GET", "/api/fs", admin, nil); res.StatusCode != 200 {
+		t.Fatalf("browse with no path gave %d", res.StatusCode)
+	}
+}

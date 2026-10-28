@@ -33,7 +33,24 @@ your user name and password. The app checks `/api/health`, signs in, and syncs.
 and sign in with the same account. Everyone can browse their libraries, see their
 listening stats, download a book as a zip, and sign out their devices. Admins can also
 rescan, find and edit metadata (with covers), and manage users and their library access.
-It's part of the binary and uses the same API as the apps.
+It's part of the binary and uses the same API as the apps, and it follows the apps'
+look, light or dark (it follows the system unless you pick one in the top bar).
+
+**Adding libraries without restarting.** An admin can add a folder as a library from the
+web page (the folder button in the Library tab's top bar, which opens a picker over the
+server's own disk) or from the command line:
+
+```bash
+kithara-server library add Lectures /srv/talks
+kithara-server library list
+kithara-server library remove Lectures
+```
+
+These are kept in `libraries.json` in the data folder and picked up on the next scan.
+Libraries given with `--library` stay as they are and can only be changed there. With
+neither, the server starts with no libraries (or `./library` if there is one), ready for
+an admin to add some. Removing a library takes its books off every device but leaves
+the files, and everyone's places in them, alone: add the folder back and both return.
 
 **More than one library.** Give `--library` once per folder, optionally named:
 
@@ -139,6 +156,7 @@ probe-cache.json      ffprobe results, by file
 covers/               artwork extracted from files, and covers chosen by matching
 metadata/<bookId>.json  metadata an admin matched or edited (audiobookshelf's format)
 ids-<library>.json    ids by path, for each library (ids.json in older versions)
+libraries.json        libraries added from the web page or `kithara-server library add`
 ```
 
 Back up `users.json`, the `users/` folder and `metadata/` (plus `covers/*-match.*`).
@@ -226,7 +244,13 @@ Everything the app talks is in the protocol document. Server specifics:
 - `GET /api/stats?tzOffset=MINUTES` (minutes east of UTC; days begin at local midnight)
   sums those sessions: total time, time per day, per book, days listened, current and
   longest streak, books started and finished.
-- `GET /api/libraries` and `GET /api/library?library=NAME`, as above.
+- `GET /api/libraries` and `GET /api/library?library=NAME`, as above. For admins each
+  library also carries its `path`, `fixed` (set on the command line) and the `error`
+  from its last scan, if any.
+- **Libraries (admin):** `POST /api/libraries` with `path` (as the server sees it) and an
+  optional `name` adds one and scans it; `DELETE /api/libraries/{name}` removes one added
+  that way (`409` for one from the command line). `GET /api/fs?path=` lists the folders
+  in a folder on the server, for picking one.
 - Failed sign-ins are limited to 10 per address and 30 per user name in 15 minutes;
   past that, `POST /api/auth` answers `429` with `Retry-After`. Devices already signed in
   are unaffected. Behind a reverse proxy, pass `--trust-proxy` (or
