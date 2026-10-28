@@ -513,7 +513,7 @@ func TestDownloadLinks(t *testing.T) {
 		t.Fatalf("link to a hidden book gave %d", res.StatusCode)
 	}
 	exp := time.Now().Add(-time.Minute).Unix()
-	q := url.Values{"u": {"kid"}, "exp": {strconv.FormatInt(exp, 10)}, "sig": {srv.linkSig("kid", gruffalo.ID, exp)}}
+	q := url.Values{"u": {"kid"}, "exp": {strconv.FormatInt(exp, 10)}, "sig": {srv.linkSig("kid", "zip", gruffalo.ID, exp)}}
 	if res, _ := call(t, ts, "GET", "/api/books/"+gruffalo.ID+"/download?"+q.Encode(), "", nil); res.StatusCode != 403 {
 		t.Fatalf("expired link gave %d", res.StatusCode)
 	}

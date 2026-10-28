@@ -1,7 +1,7 @@
 // kithara-server: a small, self-hosted server for the Kithara audiobook apps.
 //
 // It speaks the Kithara sync protocol (docs/kithara-sync-protocol.md in the app
-// repository): one folder of audiobooks becomes a library, and each user's listening
+// repository): folders of audiobooks become libraries, and each user's listening
 // position and bookmarks follow them between devices. No database; state is a few
 // JSON files under the data directory.
 //
@@ -155,15 +155,24 @@ func serveCmd(args []string) {
 	}
 	srv := newServer(store, lib, *name)
 	srv.trustProxy = *trustProxy
-	// --name and --rescan are defaults; settings.json (from the web page) overrides.
-	srv.loadSettings(*name, *rescan)
+	// --rescan is the default; settings.json (from the web page) overrides it, as it
+	// does --name.
+	srv.settings.interval = *rescan
 	go srv.runRescans()
 	var folders []string
 	for _, sp := range specs {
 		folders = append(folders, sp.Path)
 	}
 	log.Printf("kithara-server %s (protocol %d) serving %s on %s, %d books", serverVersion, protocolVersion, strings.Join(folders, ", "), *addr, lib.count())
-	if err := http.ListenAndServe(*addr, srv); err != nil {
+	hs := &http.Server{
+		Addr:    *addr,
+		Handler: srv,
+		// Slow or idle connections cannot pile up; no write timeout, since audio,
+		// downloads and backups stream for as long as they take.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	if err := hs.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

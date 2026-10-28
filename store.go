@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
@@ -227,6 +225,18 @@ func (s *store) allBookmarks(user string) ([]Bookmark, error) {
 	return list, nil
 }
 
+const maxBookmarks = 10000
+
+var errTooManyBookmarks = errors.New("too many bookmarks; delete some first")
+
+// clip shortens s to at most n characters.
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
 // addBookmark stores a bookmark, or returns the existing one when the same
 // (bookId, positionMs, createdAt) was posted before, so retries never duplicate.
 func (s *store) addBookmark(user string, b Bookmark) (Bookmark, error) {
@@ -241,11 +251,11 @@ func (s *store) addBookmark(user string, b Bookmark) (Bookmark, error) {
 			return cur, nil
 		}
 	}
-	raw := make([]byte, 6)
-	if _, err := rand.Read(raw); err != nil {
-		return Bookmark{}, err
+	if len(list) >= maxBookmarks {
+		return Bookmark{}, errTooManyBookmarks
 	}
-	b.ID = "bm_" + hex.EncodeToString(raw)
+	b.ID = "bm_" + newID()
+	b.Label = clip(b.Label, 500)
 	if b.CreatedAt == 0 {
 		b.CreatedAt = time.Now().UnixMilli()
 	}
@@ -293,11 +303,27 @@ func readJSON(path string, v any) error {
 }
 
 func writeJSON(path string, v any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
+		return err
+	}
+	return writeAtomic(path, data)
+}
+
+// writeJSONCompact is writeJSON without the indentation, for the large files only the
+// server reads (the probe cache, listening sessions).
+func writeJSONCompact(path string, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return writeAtomic(path, data)
+}
+
+// writeAtomic writes to a temporary file and renames it into place, so a crash
+// mid-write leaves the previous file intact.
+func writeAtomic(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"

@@ -110,7 +110,6 @@ svg.i { width: 20px; height: 20px; fill: currentColor; flex: none; }
   border: 0; background: transparent; cursor: pointer; color: var(--on-surface-variant);
 }
 .icon-btn:hover { background: var(--hover); color: var(--on-surface); }
-.icon-btn svg.i { width: 20px; height: 20px; }
 .icon-btn.sm { width: 28px; height: 28px; }
 .icon-btn.sm svg.i { width: 18px; height: 18px; }
 .icon-btn[aria-pressed="true"] { color: var(--primary); background: var(--hover); }
@@ -152,7 +151,6 @@ label.field > span { font-size: 12px; color: var(--on-surface-variant); }
 .brand { display: flex; align-items: center; gap: 10px; width: 216px; flex: none; text-decoration: none; color: inherit; }
 .brand img { width: 26px; height: 26px; }
 .brand .name { font-size: 17px; font-weight: 500; letter-spacing: .5px; }
-.brand .name b { color: var(--secondary); font-weight: 500; }
 .hdr .server { color: var(--on-surface-variant); }
 .hdr .spacer { flex: 1; }
 .hdr .menu { display: none; }
@@ -178,7 +176,6 @@ label.field > span { font-size: 12px; color: var(--on-surface-variant); }
 .crumb h1 { font-size: 15px; font-weight: 500; letter-spacing: .3px; }
 .crumb .tools { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .body { padding: 16px 20px; }
-.body.narrow { max-width: 1000px; }
 
 @media (max-width: 900px) {
   .hdr .menu { display: inline-grid; }
@@ -212,7 +209,6 @@ label.field > span { font-size: 12px; color: var(--on-surface-variant); }
 .kv dd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; letter-spacing: .8px; text-transform: uppercase; }
 .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-.w-foot { padding: 0 14px 12px; }
 
 /* donut */
 .donut { position: relative; width: 120px; height: 120px; }
@@ -254,8 +250,9 @@ table.grid { width: 100%; border-collapse: collapse; }
 table.grid th { text-align: left; font-weight: 500; font-size: 11px; letter-spacing: .8px; text-transform: uppercase; color: var(--outline); background: var(--card-head); padding: 9px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 table.grid td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 table.grid tr:last-child td { border-bottom: 0; }
-table.grid tbody tr { cursor: pointer; }
-table.grid tbody tr:hover { background: var(--hover); }
+table.grid tbody tr[tabindex], table.grid tbody tr.link { cursor: pointer; }
+table.grid tbody tr[tabindex]:hover, table.grid tbody tr.link:hover { background: var(--hover); }
+.empty-note { padding: 24px; text-align: center; }
 table.grid .c-cover { width: 56px; padding-right: 0; }
 table.grid .c-cover .cover-box { width: 40px; }
 table.grid .c-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }

@@ -31,9 +31,10 @@ func TestLoginLimiter(t *testing.T) {
 	if l.retryAfter("k", now.Add(time.Minute)) != 0 {
 		t.Fatal("still blocked once the window passed")
 	}
-	l.reset("k")
+	// A right password takes its attempt back.
+	l.forget("k", now.Add(2*time.Second))
 	if l.retryAfter("k", now.Add(3*time.Second)) != 0 {
-		t.Fatal("reset did not clear")
+		t.Fatal("forget did not take the attempt back")
 	}
 }
 

@@ -18,13 +18,13 @@ const protocolVersion = 1
 type server struct {
 	store *store
 	lib   *library
-	name  string
 	mux   *http.ServeMux
 
 	// Failed sign-ins: a few per address, more per account (several devices, one
 	// forgetful owner) before both stop for a while.
 	ipLimit, userLimit *loginLimiter
-	trustProxy         bool // take the client address from X-Forwarded-For
+	authSlots          chan struct{} // password checks running at once (each is PBKDF2)
+	trustProxy         bool          // take the client address from X-Forwarded-For
 
 	match    *matcher
 	linkKey  []byte // signs download and audio links
@@ -33,7 +33,7 @@ type server struct {
 }
 
 func newServer(st *store, lib *library, name string) *server {
-	s := &server{store: st, lib: lib, name: name, mux: http.NewServeMux(),
+	s := &server{store: st, lib: lib, mux: http.NewServeMux(), authSlots: make(chan struct{}, 4),
 		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher(), linkKey: newLinkKey(), started: time.Now()}
 	s.loadSettings(name, 0)
 	m := s.mux
@@ -54,11 +54,11 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("GET /api/bookmarks", s.withUser(s.allBookmarks))
 	m.HandleFunc("POST /api/bookmarks/{bookId}", s.withUser(s.addBookmark))
 	m.HandleFunc("DELETE /api/bookmarks/{bookId}/{id}", s.withUser(s.deleteBookmark))
-	m.HandleFunc("GET /audio/{bookId}/{index}", s.signedOr(s.audio))
-	m.HandleFunc("HEAD /audio/{bookId}/{index}", s.signedOr(s.audio))
+	m.HandleFunc("GET /audio/{bookId}/{index}", s.signedOr("audio", s.audio))
+	m.HandleFunc("HEAD /audio/{bookId}/{index}", s.signedOr("audio", s.audio))
 	m.HandleFunc("GET /covers/{bookId}", s.withUser(s.cover))
 	m.HandleFunc("HEAD /covers/{bookId}", s.withUser(s.cover))
-	m.HandleFunc("GET /api/books/{bookId}/download", s.signedOr(s.download))
+	m.HandleFunc("GET /api/books/{bookId}/download", s.signedOr("zip", s.download))
 	m.HandleFunc("POST /api/books/{bookId}/download-link", s.withUser(s.downloadLink))
 	m.HandleFunc("POST /api/books/{bookId}/stream-link", s.withUser(s.streamLink))
 	m.HandleFunc("PUT /api/me/password", s.withUser(s.changePassword))
@@ -151,6 +151,22 @@ func (s *server) withAdmin(h userHandler) http.HandlerFunc {
 	})
 }
 
+// bookOr404 is the book in the request's path, if the user may see it; otherwise it
+// answers 404 and returns nil.
+func (s *server) bookOr404(w http.ResponseWriter, r *http.Request, user string) *Book {
+	b := s.lib.bookFor(s.acct(user), r.PathValue("bookId"))
+	if b == nil {
+		writeError(w, http.StatusNotFound, "no such book")
+	}
+	return b
+}
+
+// tooMany answers 429 with how long to wait.
+func tooMany(w http.ResponseWriter, wait time.Duration, msg string) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+	writeError(w, http.StatusTooManyRequests, msg)
+}
+
 // acct is the signed-in user's account (withUser has made sure there is one).
 func (s *server) acct(user string) Account {
 	a, _ := s.store.account(user)
@@ -184,9 +200,12 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, user, token stri
 	out := map[string]any{
 		"name": s.serverName(), "version": serverVersion, "protocol": protocolVersion,
 		"startedAt": s.started.UnixMilli(), "lastScanAt": scanAt, "lastScanMs": scanMs,
-		"books": len(s.lib.catalogueOrEmpty(s.acct(user))),
 	}
-	if a := s.acct(user); a.admin() {
+	a := s.acct(user)
+	if v, ok := s.lib.catalogueFor(a, ""); ok {
+		out["books"] = v.info.Books
+	}
+	if a.admin() {
 		devices := 0
 		for _, acc := range s.store.accounts() {
 			devices += acc.Devices
@@ -216,21 +235,25 @@ func (s *server) auth(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	ipKey, userKey := "ip:"+clientIP(r, s.trustProxy), "user:"+strings.ToLower(in.Username)
-	wait := max(s.ipLimit.retryAfter(ipKey, now), s.userLimit.retryAfter(userKey, now))
-	if wait > 0 {
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		writeError(w, http.StatusTooManyRequests, "too many failed sign-ins; try again later")
+	if wait := max(s.ipLimit.retryAfter(ipKey, now), s.userLimit.retryAfter(userKey, now)); wait > 0 {
+		tooMany(w, wait, "too many failed sign-ins; try again later")
 		return
 	}
-	if !s.store.checkPassword(in.Username, in.Password) {
-		s.ipLimit.fail(ipKey, now)
-		s.userLimit.fail(userKey, now)
+	// Count the attempt before checking it, so a burst of parallel guesses cannot all
+	// slip in under the limit; a right password takes it back.
+	s.ipLimit.fail(ipKey, now)
+	s.userLimit.fail(userKey, now)
+	s.authSlots <- struct{}{}
+	ok := s.store.checkPassword(in.Username, in.Password)
+	<-s.authSlots
+	if !ok {
 		// A small pause takes the fun out of guessing.
 		time.Sleep(400 * time.Millisecond)
 		writeError(w, http.StatusUnauthorized, "wrong user name or password")
 		return
 	}
-	s.ipLimit.reset(ipKey)
+	s.ipLimit.forget(ipKey, now)
+	s.userLimit.forget(userKey, now)
 	token, err := s.store.issueToken(in.Username, in.Device)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -256,15 +279,21 @@ func (s *server) libraryHandler(w http.ResponseWriter, r *http.Request, user, to
 		return
 	}
 	body, etag := view.body, view.etag
+	h := w.Header()
+	h.Set("Vary", "Accept-Encoding")
 	if etag != "" {
-		w.Header().Set("ETag", etag)
+		h.Set("ETag", etag)
 		if r.Header.Get("If-None-Match") == etag {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	if len(view.gz) > 0 && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		body = view.gz
+		h.Set("Content-Encoding", "gzip")
+	}
+	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.Write(body)
 }
 
@@ -291,8 +320,7 @@ func (s *server) allProgress(w http.ResponseWriter, r *http.Request, user, token
 
 func (s *server) putProgress(w http.ResponseWriter, r *http.Request, user, token string) {
 	bookID := r.PathValue("bookId")
-	if s.lib.bookFor(s.acct(user), bookID) == nil {
-		writeError(w, http.StatusNotFound, "no such book")
+	if s.bookOr404(w, r, user) == nil {
 		return
 	}
 	var in Progress
@@ -370,8 +398,7 @@ func (s *server) allBookmarks(w http.ResponseWriter, r *http.Request, user, toke
 
 func (s *server) addBookmark(w http.ResponseWriter, r *http.Request, user, token string) {
 	bookID := r.PathValue("bookId")
-	if s.lib.bookFor(s.acct(user), bookID) == nil {
-		writeError(w, http.StatusNotFound, "no such book")
+	if s.bookOr404(w, r, user) == nil {
 		return
 	}
 	var in Bookmark
@@ -412,18 +439,21 @@ func (s *server) audio(w http.ResponseWriter, r *http.Request, user, token strin
 	}
 	f := b.Files[idx]
 	fh, err := os.Open(f.path)
+	if err == nil {
+		defer fh.Close()
+	}
+	var info os.FileInfo
+	if err == nil {
+		info, err = fh.Stat()
+	}
 	if err != nil {
+		// The error names the file on disk: logged, not shown.
+		log.Printf("audio %s/%d: %v", b.ID, idx, err)
 		if errors.Is(err, os.ErrNotExist) {
 			writeError(w, http.StatusNotFound, "file is gone; rescan")
 		} else {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, "cannot read this file")
 		}
-		return
-	}
-	defer fh.Close()
-	info, err := fh.Stat()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if f.MimeType != "" {

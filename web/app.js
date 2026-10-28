@@ -17,7 +17,8 @@ const state = {
   progress: new Map(),
   query: "",
   view: "dashboard",
-  prefs: { layout: "table", sort: "title", filter: "all", library: "", theme: "dark" },
+  prefs: { layout: "table", sort: "title", filter: "all", library: "", theme: "dark", group: "books" },
+  loadedAt: 0, // when the catalogue was last fetched
 };
 
 // ------------------------------------------------------------------ helpers
@@ -157,11 +158,12 @@ class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
-async function api(path, { method = "GET", body, raw = false } = {}) {
+// api calls the server with the token. body is sent as JSON, blob (a file) as it is.
+async function api(path, { method = "GET", body, blob, raw = false } = {}) {
   const headers = {};
   if (state.token) headers.Authorization = "Bearer " + state.token;
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(path, { method, headers, body: blob ?? (body === undefined ? undefined : JSON.stringify(body)) });
   if (res.status === 401 && state.token) {
     forgetToken();
     renderSignIn("You were signed out. Sign in again.");
@@ -201,6 +203,16 @@ const fmtUptime = (ms) => {
   return d ? `${d} day${d === 1 ? "" : "s"}, ${h}h ${m % 60}m` : h ? `${h}h ${m % 60}m` : `${m % 60}m`;
 };
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+const seriesLabel = (x) => (x.series ? x.series + (x.seriesIndex != null ? " #" + x.seriesIndex : "") : "");
+const firstAuthor = (x) => (x.author || "").split(",")[0].trim();
+const emptyNote = (msg) => el("p", { class: "muted empty-note" }, msg);
+const PROVIDERS = [["audible", "Audible"], ["openlibrary", "Open Library"], ["google", "Google Books"]];
+
+// clickDownload saves what href points at, as the browser's own download.
+function clickDownload(href, name = "") {
+  const a = el("a", { href, download: name });
+  document.body.append(a); a.click(); a.remove();
+}
 const isAdmin = () => state.me?.role === "admin";
 
 // ------------------------------------------------------------------ covers
@@ -216,15 +228,24 @@ const coverObserver = new IntersectionObserver((entries) => {
   }
 }, { rootMargin: "400px" });
 
+const COVERS_KEPT = 300; // decoded covers held at once; the oldest are let go
+
 async function fillCover(box) {
   const url = box.dataset.src;
   try {
     let blobURL = coverCache.get(url);
-    if (!blobURL) {
+    if (blobURL) {
+      coverCache.delete(url); // most recently used goes last
+    } else {
       const res = await api(url, { raw: true });
       if (!res.ok) return;
       blobURL = URL.createObjectURL(await res.blob());
-      coverCache.set(url, blobURL);
+    }
+    coverCache.set(url, blobURL);
+    while (coverCache.size > COVERS_KEPT) {
+      const [oldest, old] = coverCache.entries().next().value;
+      coverCache.delete(oldest);
+      URL.revokeObjectURL(old); // pictures already on screen stay drawn
     }
     box.replaceWith(el("img", { class: "cover", src: blobURL, alt: "" }));
   } catch { /* keep the stand-in */ }
@@ -361,6 +382,22 @@ async function render() {
   }
 }
 
+// rescanNow asks the server to rescan; the catalogue is fetched again afterwards.
+async function rescanNow() {
+  const r = await api("/api/rescan", { method: "POST" });
+  state.loadedAt = 0;
+  return r;
+}
+
+function rescanButton() {
+  const btn = el("button", { class: "btn secondary small", type: "button", onclick: async () => {
+    btn.disabled = true;
+    try { const r = await rescanNow(); toast(`Rescanned: ${plural(r.books, "book")}`); render(); }
+    catch (e) { toast(e.message); btn.disabled = false; }
+  } }, icon("refresh"), "Rescan");
+  return btn;
+}
+
 async function refreshMain(view) {
   const main = document.getElementById("main");
   const tools = document.getElementById("tools");
@@ -369,14 +406,13 @@ async function refreshMain(view) {
 
 // A dashboard widget: a header with actions, then a visual and an overview list, or a
 // full-width body.
-function widget(title, { actions = [], visual, overview, body, wide, foot } = {}) {
+function widget(title, { actions = [], visual, overview, body, wide } = {}) {
   return el("section", { class: "widget" + (wide ? " wide" : "") },
     el("div", { class: "w-head" }, el("h2", { class: "clip" }, title), actions),
     visual || overview ? el("div", { class: "w-body" },
       el("div", { class: "w-visual" }, visual),
       el("div", { class: "overview" }, el("div", { class: "label" }, "Overview"), overview)) :
-      el("div", { class: "w-body full" }, body),
-    foot ? el("div", { class: "w-foot" }, foot) : null);
+      el("div", { class: "w-body full" }, body));
 }
 
 function kv(pairs) {
@@ -390,10 +426,16 @@ function kv(pairs) {
 
 // ------------------------------------------------------------------ data
 
+// loadLibrary fetches the progress, and the catalogue when it has not been fetched in
+// the last minute or something changed it (state.loadedAt = 0).
 async function loadLibrary() {
-  const [cat, prog, libs] = await Promise.all([api("/api/library"), api("/api/progress"), api("/api/libraries")]);
-  state.books = cat.books;
-  state.libraries = libs.libraries;
+  const fresh = Date.now() - state.loadedAt < 60000;
+  const [cat, prog, libs] = await Promise.all([fresh ? null : api("/api/library"), api("/api/progress"), fresh ? null : api("/api/libraries")]);
+  if (cat) {
+    state.books = cat.books;
+    state.libraries = libs.libraries;
+    state.loadedAt = Date.now();
+  }
   state.progress = new Map(prog.progress.map((p) => [p.bookId, p]));
   if (state.prefs.library && !state.libraries.some((l) => l.name === state.prefs.library)) state.prefs.library = "";
 }
@@ -438,12 +480,7 @@ async function viewDashboard(tools) {
   const totalMs = state.books.reduce((n, b) => n + b.durationMs, 0);
 
   if (isAdmin()) {
-    const rescan = el("button", { class: "btn secondary small", type: "button", onclick: async () => {
-      rescan.disabled = true;
-      try { const r = await api("/api/rescan", { method: "POST" }); toast(`Rescanned: ${plural(r.books, "book")}`); render(); }
-      catch (e) { toast(e.message); rescan.disabled = false; }
-    } }, icon("refresh"), "Rescan");
-    tools.append(rescan);
+    tools.append(rescanButton());
   }
 
   // System information
@@ -560,7 +597,8 @@ function matches(b, q) {
   return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
 }
 
-const byTitle = (a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: "base" });
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const byTitle = (a, b) => collator.compare(a.title, b.title);
 const SORTS = {
   title: ["Title", byTitle],
   author: ["Author", (a, b) => (a.author || "~").localeCompare(b.author || "~") || byTitle(a, b)],
@@ -570,16 +608,14 @@ const SORTS = {
   updated: ["Recently changed", (a, b) => b.updatedAt - a.updatedAt],
 };
 
+const PAGE = 300; // books drawn at a time; more on request
+let searchTimer = 0;
+
 async function viewLibrary(tools) {
   await loadLibrary();
   const prefs = state.prefs;
   if (isAdmin()) {
-    const rescan = el("button", { class: "btn secondary small", type: "button", onclick: async () => {
-      rescan.disabled = true;
-      try { const r = await api("/api/rescan", { method: "POST" }); toast(`Rescanned: ${plural(r.books, "book")}`); render(); }
-      catch (e) { toast(e.message); rescan.disabled = false; }
-    } }, icon("refresh"), "Rescan");
-    tools.append(rescan);
+    tools.append(rescanButton());
   }
   if (!state.libraries.length) {
     return el("div", { class: "widget" }, el("div", { class: "w-body full" },
@@ -589,7 +625,9 @@ async function viewLibrary(tools) {
 
   const shelf = el("div");
   const count = span("small muted");
+  let limit = PAGE;
   const fill = () => {
+    coverObserver.disconnect(); // the old rows' covers are going
     const shown = state.books
       .filter((b) => !prefs.library || b.library === prefs.library)
       .filter((b) => prefs.filter === "all" || statusOf(b) === prefs.filter)
@@ -597,11 +635,14 @@ async function viewLibrary(tools) {
       .sort((SORTS[prefs.sort] || SORTS.title)[1]);
     count.textContent = shown.length === state.books.length ? plural(shown.length, "book") : `${shown.length} of ${state.books.length} books`;
     if (!shown.length) {
-      shelf.replaceChildren(el("div", { class: "table-wrap" }, el("p", { class: "muted", style: "padding:24px;text-align:center" }, "Nothing matches.")));
+      shelf.replaceChildren(el("div", { class: "table-wrap" }, emptyNote("Nothing matches.")));
       return;
     }
     if (prefs.group === "series" || prefs.group === "authors") return shelf.replaceChildren(groupedShelf(shown, prefs.group));
-    shelf.replaceChildren(prefs.layout === "grid" ? el("div", { class: "cover-grid" }, shown.map(bookTile)) : bookTable(shown));
+    const page = shown.slice(0, limit);
+    shelf.replaceChildren(prefs.layout === "grid" ? el("div", { class: "cover-grid" }, page.map(bookTile)) : bookTable(page),
+      shown.length > limit ? el("div", { class: "row", style: "justify-content:center;margin-top:12px" },
+        el("button", { class: "btn secondary", type: "button", onclick: () => { limit += PAGE; fill(); } }, `Show ${Math.min(PAGE, shown.length - limit)} more of ${shown.length - limit}`)) : null);
   };
 
   const filters = el("div", { class: "chips", role: "group", "aria-label": "Show" });
@@ -621,16 +662,16 @@ async function viewLibrary(tools) {
 
   const groupBox = el("div", { class: "segmented", role: "group", "aria-label": "Browse by" });
   const drawGroup = () => groupBox.replaceChildren(...[["books", "Books"], ["series", "Series"], ["authors", "Authors"]].map(([id, label]) =>
-    chip(label, (prefs.group || "books") === id, () => { prefs.group = id; savePrefs(); drawGroup(); layoutBtns.forEach((b) => { b.hidden = id !== "books"; }); fill(); })));
+    chip(label, prefs.group === id, () => { prefs.group = id; savePrefs(); drawGroup(); layoutBtns.forEach((b) => { b.hidden = id !== "books"; }); fill(); })));
   drawGroup();
-  layoutBtns.forEach((b) => { b.hidden = (prefs.group || "books") !== "books"; });
+  layoutBtns.forEach((b) => { b.hidden = prefs.group !== "books"; });
 
   fill();
   return [
     el("div", { class: "toolbar" },
       groupBox,
       el("div", { class: "search" }, icon("search"), el("input", { type: "search", placeholder: "Search title, author, narrator, series", "aria-label": "Search", value: state.query,
-        oninput: (e) => { state.query = e.target.value; fill(); } })),
+        oninput: (e) => { state.query = e.target.value; limit = PAGE; clearTimeout(searchTimer); searchTimer = setTimeout(fill, 150); } })),
       libSelect, sortSelect, layoutBtns),
     el("div", { class: "toolbar" }, filters, el("span", { class: "grow" }), count),
     shelf,
@@ -651,7 +692,7 @@ function bookTable(books) {
         el("td", {}, el("div", { class: "strong clip2" }, b.title), b.subtitle ? el("div", { class: "small muted clip" }, b.subtitle) : null),
         el("td", { class: "hide-sm" }, b.author || span("muted", "—")),
         el("td", { class: "hide-sm" }, b.narrator || span("muted", "—")),
-        el("td", { class: "hide-sm" }, b.series ? `${b.series}${b.seriesIndex != null ? " #" + b.seriesIndex : ""}` : span("muted", "—")),
+        el("td", { class: "hide-sm" }, seriesLabel(b) || span("muted", "—")),
         multi ? el("td", { class: "hide-sm muted" }, b.library) : null,
         el("td", { class: "c-num" }, fmtDuration(b.durationMs)),
         el("td", { class: "c-prog" }, p && !p.finished && p.positionMs > 0 ? gradientProgress(p.fraction) : null, statusText(b)));
@@ -697,8 +738,7 @@ function openBook(id, mode = "view") {
 }
 
 function currentChapter(b, p) {
-  if (!p || p.finished || !b.chapters.length) return -1;
-  return b.chapters.findIndex((c) => p.positionMs >= c.startMs && p.positionMs < c.endMs);
+  return p && !p.finished ? currentChapterAt(b, p.positionMs) : -1;
 }
 
 function bookDetail(b) {
@@ -713,8 +753,7 @@ function bookDetail(b) {
     download.disabled = true;
     try {
       const link = await api(`/api/books/${encodeURIComponent(b.id)}/download-link`, { method: "POST" });
-      const a = el("a", { href: link.url, download: "" });
-      document.body.append(a); a.click(); a.remove();
+      clickDownload(link.url);
     } catch (e) { toast(e.message); }
     download.disabled = false;
   } }, icon("download"), `Download (${fmtBytes(size)})`);
@@ -747,7 +786,7 @@ function bookDetail(b) {
       b.subtitle ? el("p", { class: "muted" }, b.subtitle) : null,
       el("div", { style: "margin-top:12px" }, kv([
         ["Author", b.author], ["Narrator", b.narrator],
-        ["Series", b.series ? `${b.series}${b.seriesIndex != null ? " #" + b.seriesIndex : ""}` : ""],
+        ["Series", seriesLabel(b)],
         ["Length", fmtDuration(b.durationMs)], ["Published", [b.publishedYear, b.publisher].filter(Boolean).join(", ")],
         ["Language", b.language], ["ISBN", b.isbn], ["ASIN", b.asin],
         ["Library", state.libraries.length > 1 ? b.library : ""],
@@ -836,16 +875,15 @@ function replaceBook(updated) {
 }
 
 function bookMatcher(b) {
-  const providers = [["audible", "Audible"], ["openlibrary", "Open Library"], ["google", "Google Books"]];
   let provider = "audible";
   const region = el("select", { "aria-label": "Audible region", style: "width:auto", onchange: () => search() },
     ["us", "uk", "ca", "au", "de", "fr", "it", "es", "in", "jp"].map((r) => el("option", { value: r }, "Region: " + r.toUpperCase())));
   const providerChips = el("div", { class: "segmented", role: "group", "aria-label": "Provider" });
-  const drawProviders = () => providerChips.replaceChildren(...providers.map(([id, label]) =>
+  const drawProviders = () => providerChips.replaceChildren(...PROVIDERS.map(([id, label]) =>
     chip(label, provider === id, () => { provider = id; region.hidden = id !== "audible"; drawProviders(); search(); })));
   drawProviders();
   const title = el("input", { type: "text", value: b.title, "aria-label": "Title", placeholder: "Title" });
-  const author = el("input", { type: "text", value: (b.author || "").split(",")[0], "aria-label": "Author", placeholder: "Author" });
+  const author = el("input", { type: "text", value: firstAuthor(b), "aria-label": "Author", placeholder: "Author" });
   const results = el("div", { class: "stack" });
   async function search(ev) {
     ev?.preventDefault();
@@ -872,7 +910,7 @@ function bookMatcher(b) {
 }
 
 function matchResult(b, c) {
-  const series = c.series ? ` · ${c.series}${c.seriesIndex != null ? " #" + c.seriesIndex : ""}` : "";
+  const series = c.series ? " · " + seriesLabel(c) : "";
   const keepCover = el("input", { type: "checkbox", checked: !!c.coverUrl, disabled: !c.coverUrl });
   return el("div", { class: "result" },
     c.coverUrl ? el("img", { src: c.coverUrl, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : el("div", { class: "cover blank" }, (c.title || "").slice(0, 2)),
@@ -930,7 +968,7 @@ async function viewStats() {
         el("thead", {}, el("tr", {}, el("th", { class: "c-cover" }), el("th", {}, "Title"), el("th", { class: "c-num" }, "Listened"), el("th", { class: "hide-sm" }, "Last listened"), el("th", { class: "hide-sm" }, "Finished"))),
         el("tbody", {}, [...st.books].sort((a, b) => b.listenedMs - a.listenedMs).map((r) => {
           const b = byId.get(r.bookId);
-          return el("tr", { onclick: () => b && openBook(b.id) },
+          return el("tr", { class: b ? "link" : null, onclick: () => b && openBook(b.id) },
             el("td", { class: "c-cover" }, b ? cover(b) : null),
             el("td", {}, b?.title || span("muted", "A book no longer in your library")),
             el("td", { class: "c-num" }, fmtDuration(r.listenedMs)),
@@ -972,14 +1010,14 @@ async function viewDevices(tools, who = state.me.name) {
   };
   out.push(el("div", { class: "table-wrap" }, devices.length ? el("table", { class: "grid" },
     el("thead", {}, el("tr", {}, el("th", { style: "width:44px" }), el("th", {}, "Device"), el("th", { class: "hide-sm" }, "ID"), el("th", {}, "Signed in"), el("th", {}, "Last seen"), el("th", {}))),
-    el("tbody", {}, devices.map((d) => el("tr", { style: "cursor:default" },
+    el("tbody", {}, devices.map((d) => el("tr", {},
       el("td", { class: "muted" }, icon(deviceIcon(d.name))),
       el("td", {}, d.name || span("muted", "Unnamed device"), d.current ? el("span", { class: "badge" }, "This browser") : null),
       el("td", { class: "hide-sm mono muted" }, d.id),
       el("td", { class: "muted" }, fmtDate(d.createdAt)),
       el("td", { class: "muted" }, relative(d.lastSeenAt)),
       el("td", { class: "c-num" }, el("button", { class: "btn danger small", type: "button", onclick: () => revoke(d) }, "Sign out")))))) :
-    el("p", { class: "muted", style: "padding:24px;text-align:center" }, "No devices signed in.")));
+    emptyNote("No devices signed in.")));
   out.push(el("p", { class: "tiny muted", style: "margin-top:10px" }, "Signing a device out makes it ask for the password again. Changing a password signs out every device. Last-seen times update about once an hour."));
   return out;
 }
@@ -996,6 +1034,7 @@ async function viewLibraries(tools) {
     if (!confirm(`Remove ${l.name}? Its books disappear from the server and every device. The files stay where they are, and adding the folder back brings the books and everyone's places back.`)) return;
     try {
       await api("/api/libraries/" + encodeURIComponent(l.name), { method: "DELETE" });
+      state.loadedAt = 0;
       toast(`Removed ${l.name}`);
       render();
     } catch (e) { toast(e.message); }
@@ -1003,7 +1042,7 @@ async function viewLibraries(tools) {
   return [
     el("div", { class: "table-wrap" }, libs.length ? el("table", { class: "grid" },
       el("thead", {}, el("tr", {}, el("th", {}, "Name"), el("th", {}, "Status"), el("th", { class: "hide-sm" }, "Path"), el("th", { class: "c-num" }, "Books"), el("th", { class: "c-num" }, "Length"), el("th", { class: "hide-sm" }, "Source"), el("th", {}))),
-      el("tbody", {}, libs.map((l) => el("tr", { style: "cursor:default" },
+      el("tbody", {}, libs.map((l) => el("tr", {},
         el("td", {}, el("span", { class: "row", style: "flex-wrap:nowrap" }, el("span", { class: "gold" }, icon("folder")), span("strong", l.name))),
         el("td", {}, l.error ? span("status err", "Unreadable") : span("status ok", "Online"), l.error ? el("div", { class: "tiny err" }, l.error) : null),
         el("td", { class: "hide-sm mono muted" }, l.path),
@@ -1038,6 +1077,7 @@ async function showPicker(box, path) {
     add.disabled = true;
     try {
       await api("/api/libraries", { method: "POST", body: { name: name.value.trim(), path: here.path } });
+      state.loadedAt = 0;
       toast(`Added ${name.value.trim() || here.path}`);
       dialog.close();
       render();
@@ -1065,7 +1105,7 @@ async function viewUsers(tools) {
   return [
     el("div", { class: "table-wrap" }, el("table", { class: "grid" },
       el("thead", {}, el("tr", {}, el("th", { style: "width:52px" }), el("th", {}, "Username"), el("th", {}, "Role"), el("th", { class: "hide-sm" }, "Libraries"), el("th", { class: "c-num" }, "Devices"), el("th", {}))),
-      el("tbody", {}, users.map((u) => el("tr", { onclick: () => userSheet(u, libraries) },
+      el("tbody", {}, users.map((u) => el("tr", { class: "link", onclick: () => userSheet(u, libraries) },
         el("td", {}, el("span", { class: "avatar", style: "width:30px;height:30px;font-size:13px" }, u.name.slice(0, 1))),
         el("td", {}, span("strong", u.name), u.name === state.me.name ? el("span", { class: "badge plain" }, "You") : null),
         el("td", {}, u.role === "admin" ? span("gold", "Administrator") : "Listener"),
@@ -1469,9 +1509,7 @@ function pickCover(b) {
     input.remove();
     if (!file) return;
     try {
-      const res = await fetch(`/api/books/${encodeURIComponent(b.id)}/cover`, { method: "PUT", headers: { Authorization: "Bearer " + state.token }, body: file });
-      const out = await res.json();
-      if (!res.ok) throw new Error(out.error || res.statusText);
+      const out = await api(`/api/books/${encodeURIComponent(b.id)}/cover`, { method: "PUT", blob: file });
       replaceBook(out); toast("Cover changed"); openBook(b.id);
     } catch (e) { toast(e.message); }
   } });
@@ -1491,7 +1529,7 @@ function groupedShelf(books, by) {
     }
   }
   const names = [...groups.keys()].sort((a, c) => a.localeCompare(c, undefined, { sensitivity: "base" }));
-  if (!names.length) return el("div", { class: "table-wrap" }, el("p", { class: "muted", style: "padding:24px;text-align:center" }, by === "series" ? "No series yet. Series come from tags, folder names (Author/Series/Book) or saved details." : "No authors."));
+  if (!names.length) return el("div", { class: "table-wrap" }, emptyNote(by === "series" ? "No series yet. Series come from tags, folder names (Author/Series/Book) or saved details." : "No authors."));
   return el("div", { class: "groups" }, names.map((name) => {
     const list = groups.get(name).sort(by === "series" ? (a, c) => (a.seriesIndex ?? 1e9) - (c.seriesIndex ?? 1e9) || byTitle(a, c) : byTitle);
     const total = list.reduce((n, b) => n + b.durationMs, 0);
@@ -1541,7 +1579,7 @@ async function viewAccount() {
     }),
     widget("Appearance", { body: [
       el("div", { class: "segmented" }, [["dark", "Dark"], ["light", "Light"]].map(([id, label]) =>
-        chip(label, (state.prefs.theme || "dark") === id, () => { state.prefs.theme = id; savePrefs(); applyTheme(); render(); }))),
+        chip(label, state.prefs.theme === id, () => { state.prefs.theme = id; savePrefs(); applyTheme(); render(); }))),
       el("p", { class: "small muted", style: "margin-top:10px" }, "Kept in this browser."),
     ] }),
     widget("Password", { wide: true, body: [pw, el("p", { class: "tiny muted", style: "margin-top:8px" }, "Changing it signs out your other devices; this browser stays signed in.")] }),
@@ -1551,8 +1589,7 @@ async function viewAccount() {
 // ------------------------------------------------------------------ upload (admin)
 
 function uploadSheet(libName) {
-  const libs = state.libraries.length ? state.libraries : [];
-  const lib = el("select", {}, libs.map((l) => el("option", { value: l.name, selected: l.name === libName ? true : null }, l.name)));
+  const lib = el("select", {}, state.libraries.map((l) => el("option", { value: l.name, selected: l.name === libName ? true : null }, l.name)));
   const folder = el("input", { type: "text", placeholder: "Author/Title (leave empty to keep the folders you pick)" });
   const list = el("div", { class: "uploads" });
   let queue = [];
@@ -1586,7 +1623,7 @@ function uploadSheet(libName) {
       catch (e) { failed++; item.row.append(span("tiny err", e.message)); }
     }
     queue = [];
-    try { await api("/api/rescan", { method: "POST" }); } catch { /* the periodic scan will */ }
+    try { await rescanNow(); } catch { /* the periodic scan will */ }
     toast(`${plural(ok, "file")} uploaded${failed ? `, ${failed} failed` : ""}`);
     if (!failed) { dialog.close(); render(); }
   } }, icon("upload"), span("", "Upload"));
@@ -1645,14 +1682,14 @@ async function viewMaintenance(tools) {
   const lacking = state.books.filter((b) => gaps(b).length).sort(byTitle);
 
   const provider = el("select", { "aria-label": "Provider", style: "width:auto" },
-    [["audible", "Audible"], ["openlibrary", "Open Library"], ["google", "Google Books"]].map(([v, l]) => el("option", { value: v }, "Source: " + l)));
+    PROVIDERS.map(([v, l]) => el("option", { value: v }, "Source: " + l)));
   const rows = new Map();
   const tbody = el("tbody", {}, lacking.map((b) => {
     const pick = el("input", { type: "checkbox", checked: true, "aria-label": "Include " + b.title });
     const found = el("td", { class: "muted small" }, "—");
     const use = el("input", { type: "checkbox", disabled: true, "aria-label": "Use this match" });
     rows.set(b.id, { b, pick, found, use, match: null });
-    return el("tr", { style: "cursor:default" },
+    return el("tr", {},
       el("td", { style: "width:32px" }, pick),
       el("td", { class: "c-cover" }, cover(b)),
       el("td", {}, el("div", { class: "strong clip2" }, b.title), el("div", { class: "small muted" }, b.author || "Unknown author")),
@@ -1668,7 +1705,7 @@ async function viewMaintenance(tools) {
       status.textContent = `Searching ${++n} of ${todo.length}…`;
       r.found.textContent = "Searching…";
       try {
-        const q = new URLSearchParams({ provider: provider.value, title: r.b.title, author: (r.b.author || "").split(",")[0] });
+        const q = new URLSearchParams({ provider: provider.value, title: r.b.title, author: firstAuthor(r.b) });
         const { results } = await api(`/api/books/${encodeURIComponent(r.b.id)}/match?` + q);
         const best = results[0];
         r.match = best || null;
@@ -1695,7 +1732,7 @@ async function viewMaintenance(tools) {
       try { await api(`/api/books/${encodeURIComponent(r.b.id)}/metadata?rescan=0`, { method: "PUT", body: r.match }); }
       catch { failed++; }
     }
-    await api("/api/rescan", { method: "POST" }).catch(() => {});
+    await rescanNow().catch(() => {});
     toast(`Saved ${chosen.length - failed} of ${chosen.length}`);
     render();
   } }, icon("check"), "Apply ticked");
@@ -1705,7 +1742,7 @@ async function viewMaintenance(tools) {
       el("div", { class: "w-head" }, el("h2", {}, `Scan problems (${problems.length})`)),
       problems.length ? el("table", { class: "grid" },
         el("thead", {}, el("tr", {}, el("th", {}, "Library"), el("th", {}, "Path"), el("th", {}, "Problem"))),
-        el("tbody", {}, problems.map((p) => el("tr", { style: "cursor:default" },
+        el("tbody", {}, problems.map((p) => el("tr", {},
           el("td", {}, p.library), el("td", { class: "mono small" }, p.path), el("td", { class: "err small" }, p.error))))) :
         el("p", { class: "muted", style: "padding:14px" }, "The last scan used everything it found.")),
     el("section", { class: "widget" },
@@ -1759,8 +1796,7 @@ async function viewSettings() {
       const res = await api("/api/backup", { raw: true });
       if (!res.ok) throw new Error((await res.json()).error || res.statusText);
       const url = URL.createObjectURL(await res.blob());
-      const a = el("a", { href: url, download: `kithara-backup-${new Date().toISOString().slice(0, 10)}.zip` });
-      document.body.append(a); a.click(); a.remove();
+      clickDownload(url, `kithara-backup-${new Date().toISOString().slice(0, 10)}.zip`);
       setTimeout(() => URL.revokeObjectURL(url), 10000);
     } catch (e) { toast(e.message); }
     dl.disabled = false;
@@ -1784,7 +1820,7 @@ async function viewActivity(tools, days = 30) {
   return [
     el("div", { class: "table-wrap", style: "margin-bottom:12px" }, el("table", { class: "grid" },
       el("thead", {}, el("tr", {}, el("th", {}, "User"), el("th", { class: "c-num" }, "Listened"), el("th", { class: "c-num hide-sm" }, "Books"), el("th", { class: "c-num hide-sm" }, "Sessions"), el("th", {}, "Last listened"))),
-      el("tbody", {}, act.users.map((u) => el("tr", { style: "cursor:default" },
+      el("tbody", {}, act.users.map((u) => el("tr", {},
         el("td", {}, el("span", { class: "row", style: "flex-wrap:nowrap" }, el("span", { class: "avatar", style: "width:26px;height:26px;font-size:12px" }, u.name.slice(0, 1)), span("strong", u.name))),
         el("td", { class: "c-num" }, fmtDuration(u.listenedMs)),
         el("td", { class: "c-num hide-sm" }, u.books),
@@ -1794,7 +1830,7 @@ async function viewActivity(tools, days = 30) {
       el("div", { class: "w-head" }, el("h2", {}, "Recent sessions")),
       act.recent.length ? el("table", { class: "grid" },
         el("thead", {}, el("tr", {}, el("th", {}, "When"), el("th", {}, "User"), el("th", {}, "Book"), el("th", { class: "hide-sm" }, "Device"), el("th", { class: "c-num" }, "Listened"), el("th", { class: "hide-sm" }, "From – to"))),
-        el("tbody", {}, act.recent.map((r) => el("tr", { style: "cursor:default" },
+        el("tbody", {}, act.recent.map((r) => el("tr", {},
           el("td", { class: "muted small" }, fmtDateTime(r.endedAt)),
           el("td", {}, r.user),
           el("td", {}, title(r.bookId)),

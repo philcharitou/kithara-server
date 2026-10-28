@@ -80,7 +80,9 @@ type Device struct {
 
 const pbkdfIterations = 600_000
 
-var userNameRe = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,64}$`)
+// User names start with a letter or digit (so never "." or ".."), since each names a
+// folder under users/.
+var userNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`)
 
 // migrateRoles gives a users.json from before roles existed its admins: everyone, as
 // everyone could do everything then. The caller holds s.mu (or owns s outright).
@@ -155,7 +157,7 @@ func (s *store) accountLocked(name string) Account {
 // on a server is its admin; later ones are plain users until made otherwise.
 func (s *store) setPassword(name, password string) error {
 	if !userNameRe.MatchString(name) {
-		return fmt.Errorf("user names are letters, digits and . _ @ - (1 to 64 characters)")
+		return fmt.Errorf("user names are letters, digits and . _ @ - (1 to 64 characters, starting with a letter or digit)")
 	}
 	if len(password) < 8 {
 		return errors.New("use at least 8 characters")
@@ -172,6 +174,12 @@ func (s *store) setPassword(name, password string) error {
 	defer s.mu.Unlock()
 	rec, exists := s.userDB[name]
 	if !exists {
+		// Folders are case-insensitive on some systems: Bob and bob would share one.
+		for other := range s.userDB {
+			if strings.EqualFold(other, name) {
+				return fmt.Errorf("there is already a user %q", other)
+			}
+		}
 		rec.Role = roleUser
 		if len(s.userDB) == 0 {
 			rec.Role = roleAdmin
@@ -183,11 +191,7 @@ func (s *store) setPassword(name, password string) error {
 		return err
 	}
 	// A password change signs every device out; they ask for it again.
-	for t, tr := range s.tokens {
-		if tr.User == name {
-			delete(s.tokens, t)
-		}
-	}
+	s.dropTokensLocked(name)
 	if err := s.saveTokens(); err != nil {
 		return err
 	}
@@ -254,11 +258,7 @@ func (s *store) removeUser(name string) error {
 		return errLastAdmin
 	}
 	delete(s.userDB, name)
-	for t, tr := range s.tokens {
-		if tr.User == name {
-			delete(s.tokens, t)
-		}
-	}
+	s.dropTokensLocked(name)
 	if err := s.saveTokens(); err != nil {
 		return err
 	}
@@ -293,6 +293,19 @@ func (s *store) checkPassword(name, password string) bool {
 
 // ------------------------------------------------------------------ tokens and devices
 
+// dropTokensLocked signs every device of a user out; the caller holds s.mu.
+func (s *store) dropTokensLocked(name string) {
+	for t, tr := range s.tokens {
+		if tr.User == name {
+			delete(s.tokens, t)
+		}
+	}
+}
+
+// maxDevices is how many devices one user may have signed in; signing in on one more
+// signs out the one used least recently.
+const maxDevices = 50
+
 func (s *store) issueToken(user, device string) (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -302,8 +315,28 @@ func (s *store) issueToken(user, device string) (string, error) {
 	now := time.Now().UnixMilli()
 	s.lockFresh()
 	defer s.mu.Unlock()
-	s.tokens[token] = tokenRecord{User: user, Device: device, CreatedAt: now, LastSeenAt: now}
+	var mine []string
+	for t, rec := range s.tokens {
+		if rec.User == user {
+			mine = append(mine, t)
+		}
+	}
+	if len(mine) >= maxDevices {
+		sort.Slice(mine, func(i, j int) bool { return s.tokens[mine[i]].LastSeenAt < s.tokens[mine[j]].LastSeenAt })
+		for _, t := range mine[:len(mine)-maxDevices+1] {
+			delete(s.tokens, t)
+		}
+	}
+	s.tokens[token] = tokenRecord{User: user, Device: clip(device, 100), CreatedAt: now, LastSeenAt: now}
 	return token, s.saveTokens()
+}
+
+// linkSecret is mixed into a user's signed links: it changes with their password, so
+// changing it voids every link handed out before.
+func (s *store) linkSecret(user string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.userDB[user].Salt
 }
 
 // seenEvery is how stale a device's last-seen time may get before a request writes it

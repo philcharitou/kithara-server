@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,7 +50,9 @@ type Book struct {
 	ASIN          string   `json:"asin,omitempty"`
 
 	coverPath string
-	dir       string // the book's folder (for a lone file, the folder it sits in)
+	dir       string   // the book's folder (for a lone file, the folder it sits in)
+	root      *libRoot // the library it was scanned from
+	loose     bool     // an audio file beside other books, not a folder of its own
 }
 
 type File struct {
@@ -106,6 +110,7 @@ type libRoot struct {
 	ids      map[string]string // relative path -> id, for books that cannot hold a sidecar
 	books    []Book            // from its last good scan
 	fixed    bool              // from --library or the environment, not libraries.json
+	idsDirty bool              // ids changed since ids-<name>.json was written
 	problems []Problem         // files its last good scan skipped
 	lastErr  string            // why the last scan of it failed, if it did
 }
@@ -113,6 +118,7 @@ type libRoot struct {
 // catalogueView is a catalogue as served: its JSON, built once per scan, and its ETag.
 type catalogueView struct {
 	body []byte
+	gz   []byte // body, gzipped once per scan
 	etag string
 	info LibraryInfo
 }
@@ -210,17 +216,18 @@ func (l *library) count() int {
 // catalogue returns the served JSON and ETag for one library by name, or for all of
 // them with "", and whether there is such a library.
 func (l *library) catalogue(name string) (catalogueView, bool) {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
 	if name == "" {
+		l.mu.RLock()
+		defer l.mu.RUnlock()
 		return l.view[""], true
 	}
-	for _, r := range l.roots {
-		if strings.EqualFold(r.name, name) {
-			return l.view[r.name], true
-		}
+	r, ok := l.catalogueRoot(name)
+	if !ok {
+		return catalogueView{}, false
 	}
-	return catalogueView{}, false
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.view[r.name], true
 }
 
 // catalogueFor is catalogue as one account may see it: an unknown library and one the
@@ -233,6 +240,7 @@ func (l *library) catalogueFor(a Account, name string) (catalogueView, bool) {
 		}
 		return v, ok
 	}
+	l.mu.RLock()
 	var names []string
 	for _, r := range l.roots {
 		if a.sees(r.name) {
@@ -240,7 +248,6 @@ func (l *library) catalogueFor(a Account, name string) (catalogueView, bool) {
 		}
 	}
 	key := strings.Join(names, "|")
-	l.mu.RLock()
 	v, ok := l.combos[key]
 	cat, gen := l.cat, l.gen
 	l.mu.RUnlock()
@@ -263,19 +270,6 @@ func (l *library) catalogueFor(a Account, name string) (catalogueView, bool) {
 	}
 	l.mu.Unlock()
 	return v, true
-}
-
-// catalogueOrEmpty is the books an account may see.
-func (l *library) catalogueOrEmpty(a Account) []Book {
-	var out []Book
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	for _, b := range l.cat.Books {
-		if a.sees(b.Library) {
-			out = append(out, b)
-		}
-	}
-	return out
 }
 
 // libraries lists the libraries an account may see.
@@ -334,22 +328,50 @@ func (l *library) rescan() error {
 	if !haveFFprobe() {
 		return fmt.Errorf("ffprobe is not on PATH; install ffmpeg to read durations and chapters")
 	}
+	l.probe.beginScan()
 	var errs []error
 	for _, r := range l.roots {
 		books, err := l.scanRoot(r)
+		l.mu.Lock()
+		if err != nil {
+			r.lastErr = err.Error()
+		} else {
+			r.books, r.lastErr = books, ""
+		}
+		l.mu.Unlock()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("library %q (%s): %w", r.name, r.path, err))
-			l.mu.Lock()
-			r.lastErr = err.Error()
-			l.mu.Unlock()
 			continue
 		}
-		l.mu.Lock()
-		r.books, r.lastErr = books, ""
-		l.mu.Unlock()
-		_ = writeJSON(r.idsPath, r.ids)
+		if r.idsDirty {
+			_ = writeJSON(r.idsPath, r.ids)
+			r.idsDirty = false
+		}
 	}
+	if err := l.publish(); err != nil {
+		return err
+	}
+	// Forget probes of files no longer there, unless a library could not be read
+	// (its files are still there, just out of reach for now).
+	l.probe.save(len(errs) == 0)
+	l.mu.Lock()
+	l.lastScanAt, l.lastScanMs = time.Now().UnixMilli(), time.Since(start).Milliseconds()
+	l.mu.Unlock()
+	log.Printf("scanned %d books in %s", l.count(), time.Since(start).Round(time.Millisecond))
+	if len(errs) > 0 {
+		return scanError{errors.Join(errs...)}
+	}
+	return nil
+}
 
+// scanError is a scan that went ahead but could not read every library folder.
+type scanError struct{ error }
+
+func (e scanError) Unwrap() error { return e.error }
+
+// publish builds the catalogue, its served views and the problem list from each
+// library's books. The caller holds scanMu.
+func (l *library) publish() error {
 	var problems []Problem
 	var all []Book
 	seen := map[string]string{} // id -> library, to catch a book folder copied whole
@@ -393,22 +415,52 @@ func (l *library) rescan() error {
 	}
 
 	l.mu.Lock()
-	l.cat, l.byID, l.view, l.combos = cat, byID, views, map[string]catalogueView{}
-	l.gen++
-	l.mu.Unlock()
-	l.probe.save()
-	l.mu.Lock()
-	l.lastScanAt, l.lastScanMs = time.Now().UnixMilli(), time.Since(start).Milliseconds()
+	defer l.mu.Unlock()
 	for _, r := range l.roots {
 		problems = append(problems, r.problems...)
 		if r.lastErr != "" {
 			problems = append(problems, Problem{Library: r.name, Path: r.path, Error: "cannot read the library folder: " + r.lastErr})
 		}
 	}
-	l.problems = problems
+	l.cat, l.byID, l.view, l.combos, l.problems = cat, byID, views, map[string]catalogueView{}, problems
+	l.gen++
+	return nil
+}
+
+var errNoBook = errors.New("no such book")
+
+// rebuildBook reads one book again (after its details, cover or chapters were
+// edited) and republishes the catalogue, without walking every library.
+func (l *library) rebuildBook(id string) error {
+	l.scanMu.Lock()
+	defer l.scanMu.Unlock()
+	old := l.book(id)
+	if old == nil || old.root == nil {
+		return errNoBook
+	}
+	files := make([]string, len(old.Files))
+	for i, f := range old.Files {
+		files[i] = f.path
+	}
+	fallback := filepath.Base(old.dir)
+	if old.loose {
+		fallback = strings.TrimSuffix(filepath.Base(files[0]), filepath.Ext(files[0]))
+	}
+	b, err := l.buildBook(old.root, old.dir, files, fallback, old.loose)
+	if err != nil {
+		return err
+	}
+	r := old.root
+	l.mu.Lock()
+	books := append([]Book(nil), r.books...)
+	for i := range books {
+		if books[i].ID == id {
+			books[i] = b
+		}
+	}
+	r.books = books
 	l.mu.Unlock()
-	log.Printf("scanned %d books in %s", len(cat.Books), time.Since(start).Round(time.Millisecond))
-	return errors.Join(errs...)
+	return l.publish()
 }
 
 func buildView(name string, books []Book) (catalogueView, error) {
@@ -427,7 +479,11 @@ func buildView(name string, books []Book) (catalogueView, error) {
 		return catalogueView{}, err
 	}
 	sum := sha256.Sum256(body)
-	return catalogueView{body: body, etag: `"` + hex.EncodeToString(sum[:8]) + `"`, info: info}, nil
+	var gz bytes.Buffer
+	zw, _ := gzip.NewWriterLevel(&gz, gzip.BestCompression)
+	zw.Write(body)
+	zw.Close()
+	return catalogueView{body: body, gz: gz.Bytes(), etag: `"` + hex.EncodeToString(sum[:8]) + `"`, info: info}, nil
 }
 
 // scanRoot builds the books of one library folder.
@@ -440,6 +496,11 @@ func (l *library) scanRoot(r *libRoot) ([]Book, error) {
 		return nil, err
 	}
 	r.problems = nil
+	var paths []string
+	for _, d := range dirs {
+		paths = append(paths, d.files...)
+	}
+	l.probeAll(append(paths, loose...))
 	var books []Book
 	for _, d := range dirs {
 		b, err := l.buildBook(r, d.path, d.files, d.name, false)
@@ -596,23 +657,45 @@ func naturalLess(items []string) func(i, j int) bool {
 	}
 }
 
+// probeAll probes files in parallel, one ffprobe per CPU, so the first scan of a big
+// library is not one file at a time. Failures are left for buildBook to report.
+func (l *library) probeAll(paths []string) {
+	work := make(chan string)
+	var wg sync.WaitGroup
+	for range max(1, runtime.NumCPU()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range work {
+				if info, err := os.Stat(p); err == nil {
+					_, _ = l.probe.probe(p, info)
+				}
+			}
+		}()
+	}
+	for _, p := range paths {
+		work <- p
+	}
+	close(work)
+	wg.Wait()
+}
+
 // buildBook probes the files and assembles one catalogue entry.
 // A loose book is an audio file sitting beside other books rather than in a folder of
 // its own; its folder belongs to the books around it.
 func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitle string, loose bool) (Book, error) {
-	single := loose
 	id, err := l.idFor(r, dir, files[0], loose)
 	if err != nil {
 		return Book{}, err
 	}
-	b := Book{ID: id, Title: fallbackTitle, Library: r.name, Files: []File{}, Chapters: []Chapter{}, dir: dir}
+	b := Book{ID: id, Title: fallbackTitle, Library: r.name, Files: []File{}, Chapters: []Chapter{}, dir: dir, root: r, loose: loose}
 
 	// The folders above the book, for author and series: all of them for a lone file,
 	// all but the book's own for a book folder.
 	var above []string
 	if rel, err := filepath.Rel(r.path, dir); err == nil && rel != "." {
 		above = strings.Split(filepath.ToSlash(rel), "/")
-		if !single {
+		if !loose {
 			above = above[:len(above)-1]
 		}
 	}
@@ -673,7 +756,7 @@ func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitl
 
 	// Metadata files in the book's folder have the last word, chapters included (the
 	// chapter list audiobookshelf's editor saves into metadata.json).
-	if !single {
+	if !loose {
 		sm, modified := sidecarMeta(dir)
 		b.apply(sm)
 		b.UpdatedAt = max(b.UpdatedAt, modified)
@@ -697,7 +780,7 @@ func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitl
 		b.coverPath = p
 		b.UpdatedAt = max(b.UpdatedAt, modified)
 	}
-	if !single && b.coverPath == "" {
+	if !loose && b.coverPath == "" {
 		for _, n := range coverName {
 			p := filepath.Join(dir, n)
 			if info, err := os.Stat(p); err == nil {
@@ -748,9 +831,13 @@ func (l *library) idFor(r *libRoot, dir, firstFile string, loose bool) (string, 
 	key := filepath.ToSlash(rel)
 	p := filepath.Join(dir, sidecarName)
 	if data, err := os.ReadFile(p); err == nil {
-		if id := strings.TrimSpace(string(data)); id != "" {
+		switch id := strings.TrimSpace(string(data)); {
+		case validID(id):
 			l.idByPath(r, key, id) // keep the path record in step with the sidecar
 			return id, nil
+		case id != "":
+			// Ids name files in the data folder; anything but a plain id is refused.
+			log.Printf("ignoring the %s in %s: not a valid id", sidecarName, dir)
 		}
 	}
 	// A one-file book folder was taken for a loose file before 0.4.1 and its id recorded
@@ -759,7 +846,9 @@ func (l *library) idFor(r *libRoot, dir, firstFile string, loose bool) (string, 
 	l.mu.RLock()
 	if _, ok := r.ids[key]; !ok {
 		if fileRel, err := filepath.Rel(r.path, firstFile); err == nil {
-			preferred = r.ids[filepath.ToSlash(fileRel)]
+			if id := r.ids[filepath.ToSlash(fileRel)]; validID(id) {
+				preferred = id
+			}
 		}
 	}
 	l.mu.RUnlock()
@@ -783,8 +872,14 @@ func (l *library) idByPath(r *libRoot, rel, preferred string) string {
 		preferred = newID()
 	}
 	r.ids[rel] = preferred
+	r.idsDirty = true
 	return preferred
 }
+
+var idRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// validID is an id safe to use in file names and paths: letters, digits, - and _.
+func validID(id string) bool { return idRe.MatchString(id) }
 
 func newID() string {
 	raw := make([]byte, 6)
@@ -792,29 +887,37 @@ func newID() string {
 	return hex.EncodeToString(raw)
 }
 
-// extractCover pulls embedded artwork out of an audio file with ffmpeg, once.
+// extractCover pulls embedded artwork out of an audio file with ffmpeg, once. A file
+// with none is remembered (an empty <id>.none beside the covers) until it changes, so
+// rescans do not try it again.
 func (l *library) extractCover(id, file string) string {
 	dir := filepath.Join(l.dataDir, "covers")
+	out, none := filepath.Join(dir, id+".jpg"), filepath.Join(dir, id+".none")
+	src, err := os.Stat(file)
+	if err != nil {
+		return ""
+	}
+	if info, err := os.Stat(out); err == nil && !src.ModTime().After(info.ModTime()) {
+		return out
+	}
+	if info, err := os.Stat(none); err == nil && !src.ModTime().After(info.ModTime()) {
+		return ""
+	}
+	if !haveFFmpeg() {
+		return ""
+	}
 	_ = os.MkdirAll(dir, 0o755)
-	out := filepath.Join(dir, id+".jpg")
-	if info, err := os.Stat(out); err == nil {
-		if src, err := os.Stat(file); err == nil && !src.ModTime().After(info.ModTime()) {
+	cmd := exec.Command("ffmpeg", "-y", "-v", "quiet", "-protocol_whitelist", "file", "-i", file,
+		"-an", "-map", "0:v:0", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "3", out)
+	if err := cmd.Run(); err == nil {
+		if info, err := os.Stat(out); err == nil && info.Size() > 0 {
+			_ = os.Remove(none)
 			return out
 		}
 	}
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return ""
-	}
-	cmd := exec.Command("ffmpeg", "-y", "-v", "quiet", "-i", file, "-an", "-map", "0:v:0", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "3", out)
-	if err := cmd.Run(); err != nil {
-		_ = os.Remove(out)
-		return ""
-	}
-	if info, err := os.Stat(out); err != nil || info.Size() == 0 {
-		_ = os.Remove(out)
-		return ""
-	}
-	return out
+	_ = os.Remove(out)
+	_ = os.WriteFile(none, nil, 0o644)
+	return ""
 }
 
 // ------------------------------------------------------------------ ffprobe
@@ -831,6 +934,7 @@ type probeCache struct {
 	path    string
 	mu      sync.Mutex
 	entries map[string]probeResult
+	seen    map[string]bool // paths the current scan used
 	dirty   bool
 }
 
@@ -838,6 +942,12 @@ func openProbeCache(path string) *probeCache {
 	c := &probeCache{path: path, entries: map[string]probeResult{}}
 	_ = readJSON(path, &c.entries)
 	return c
+}
+
+func (c *probeCache) beginScan() {
+	c.mu.Lock()
+	c.seen = map[string]bool{}
+	c.mu.Unlock()
 }
 
 func (c *probeCache) get(path string) (probeResult, bool) {
@@ -849,6 +959,9 @@ func (c *probeCache) get(path string) (probeResult, bool) {
 
 func (c *probeCache) probe(path string, info os.FileInfo) (probeResult, error) {
 	c.mu.Lock()
+	if c.seen != nil {
+		c.seen[path] = true
+	}
 	if r, ok := c.entries[path]; ok && r.Size == info.Size() && r.ModTime == info.ModTime().UnixMilli() {
 		c.mu.Unlock()
 		return r, nil
@@ -866,30 +979,48 @@ func (c *probeCache) probe(path string, info os.FileInfo) (probeResult, error) {
 	return r, nil
 }
 
-func (c *probeCache) save() {
+// save writes the cache if it changed; with prune, it first forgets files the scan
+// did not see (deleted, moved or renamed).
+func (c *probeCache) save(prune bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if prune && c.seen != nil {
+		for p := range c.entries {
+			if !c.seen[p] {
+				delete(c.entries, p)
+				c.dirty = true
+			}
+		}
+	}
 	if !c.dirty {
 		return
 	}
-	if err := writeJSON(c.path, c.entries); err == nil {
+	if err := writeJSONCompact(c.path, c.entries); err == nil {
 		c.dirty = false
 	}
 }
 
-var ffprobeOnce struct {
-	sync.Once
-	ok bool
-}
+var (
+	haveFFprobe = sync.OnceValue(func() bool { _, err := exec.LookPath("ffprobe"); return err == nil })
+	haveFFmpeg  = sync.OnceValue(func() bool { _, err := exec.LookPath("ffmpeg"); return err == nil })
+)
 
-func haveFFprobe() bool {
-	ffprobeOnce.Do(func() { _, err := exec.LookPath("ffprobe"); ffprobeOnce.ok = err == nil })
-	return ffprobeOnce.ok
+// usedTags are the tags tagMeta and chapter naming read; the rest (lyrics, long
+// comments, encoder notes) are not kept in the cache.
+var usedTags = map[string]bool{}
+
+func init() {
+	for _, k := range strings.Fields(`album title subtitle artist album_artist author composer narrator performer
+		series mvnm grouping series-part series_index mvin part description comment synopsis publisher label
+		date year originaldate release_date language lang isbn asin audible_asin genre`) {
+		usedTags[k] = true
+	}
 }
 
 func ffprobe(path string) (probeResult, error) {
 	var out bytes.Buffer
-	cmd := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_chapters", path)
+	// Local files only: a crafted "audio" file must not make ffprobe fetch anything.
+	cmd := exec.Command("ffprobe", "-v", "quiet", "-protocol_whitelist", "file", "-print_format", "json", "-show_format", "-show_chapters", path)
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		return probeResult{}, fmt.Errorf("ffprobe: %w", err)
@@ -911,7 +1042,9 @@ func ffprobe(path string) (probeResult, error) {
 	secs, _ := strconv.ParseFloat(raw.Format.Duration, 64)
 	r := probeResult{DurationMs: int64(secs*1000 + 0.5), Tags: map[string]string{}}
 	for k, v := range raw.Format.Tags {
-		r.Tags[strings.ToLower(k)] = v
+		if k = strings.ToLower(k); usedTags[k] {
+			r.Tags[k] = v
+		}
 	}
 	for i, c := range raw.Chapters {
 		s, _ := strconv.ParseFloat(c.Start, 64)

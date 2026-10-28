@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"path/filepath"
 	"sort"
 	"time"
@@ -83,20 +81,16 @@ func (s *store) recordListening(user, device string, prev, next Progress) error 
 		if cur.EndedAt == prev.UpdatedAt && start-cur.EndedAt <= sessionJoinGap {
 			cur.EndedAt, cur.EndPositionMs = next.UpdatedAt, next.PositionMs
 			cur.ListenedMs += ms
-			return writeJSON(s.sessionsPath(user), list)
+			return writeJSONCompact(s.sessionsPath(user), list)
 		}
 		break
 	}
-	raw := make([]byte, 6)
-	if _, err := rand.Read(raw); err != nil {
-		return err
-	}
 	list = append(list, ListeningSession{
-		ID: "ls_" + hex.EncodeToString(raw), BookID: next.BookID, Device: device,
+		ID: "ls_" + newID(), BookID: next.BookID, Device: device,
 		StartedAt: start, EndedAt: next.UpdatedAt,
 		StartPositionMs: prev.PositionMs, EndPositionMs: next.PositionMs, ListenedMs: ms,
 	})
-	return writeJSON(s.sessionsPath(user), list)
+	return writeJSONCompact(s.sessionsPath(user), list)
 }
 
 // sessions returns the user's sessions, oldest first, optionally for one book and
@@ -143,7 +137,7 @@ type BookStat struct {
 	FinishedAt     int64  `json:"finishedAt,omitempty"`
 }
 
-// stats sums sessions by day and by book. Days are counted in the zone tz (minutes
+// buildStats sums sessions by day and by book. Days are counted in the zone tz (minutes
 // east of UTC), as the listener sees them; a session counts on the day it began.
 func buildStats(sessions []ListeningSession, progress []Progress, tz int, now time.Time) Stats {
 	zone := time.FixedZone("", tz*60)

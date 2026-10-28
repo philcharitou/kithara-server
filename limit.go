@@ -49,10 +49,20 @@ func (l *loginLimiter) fail(key string, now time.Time) {
 	}
 }
 
-func (l *loginLimiter) reset(key string) {
+// forget takes back the attempt counted at t (it turned out to be right).
+func (l *loginLimiter) forget(key string, t time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.fails, key)
+	list := l.fails[key]
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].Equal(t) {
+			l.fails[key] = append(list[:i:i], list[i+1:]...)
+			break
+		}
+	}
+	if len(l.fails[key]) == 0 {
+		delete(l.fails, key)
+	}
 }
 
 // prune drops failures older than the window; the caller holds mu.

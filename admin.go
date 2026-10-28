@@ -77,7 +77,7 @@ type userChange struct {
 	Libraries *[]string `json:"libraries"` // absent: unchanged; []: all libraries
 }
 
-// apply sets what the change names on an existing user.
+// applyUserChange sets what the change names on an existing user.
 func (s *server) applyUserChange(name string, in userChange) error {
 	if in.Password != "" {
 		if err := s.store.setPassword(name, in.Password); err != nil {
@@ -174,9 +174,8 @@ func (s *server) deleteUser(w http.ResponseWriter, r *http.Request, user, token 
 // folder (disc folders kept, so CD 1/track 01 and CD 2/track 01 stay apart), and its
 // cover. Audio is stored, not compressed again; it would not get smaller.
 func (s *server) download(w http.ResponseWriter, r *http.Request, user, token string) {
-	b := s.lib.bookFor(s.acct(user), r.PathValue("bookId"))
+	b := s.bookOr404(w, r, user)
 	if b == nil {
-		writeError(w, http.StatusNotFound, "no such book")
 		return
 	}
 	for _, f := range b.Files {
@@ -188,28 +187,7 @@ func (s *server) download(w http.ResponseWriter, r *http.Request, user, token st
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", contentDisposition(b.Title+".zip"))
 	zw := zip.NewWriter(w)
-	add := func(name, path string) error {
-		fh, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer fh.Close()
-		info, err := fh.Stat()
-		if err != nil {
-			return err
-		}
-		hdr, err := zip.FileInfoHeader(info)
-		if err != nil {
-			return err
-		}
-		hdr.Name, hdr.Method = name, zip.Store
-		out, err := zw.CreateHeader(hdr)
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(out, fh)
-		return err
-	}
+	add := func(name, path string) error { return zipFile(zw, name, path, zip.Store) }
 	for _, f := range b.Files {
 		name := f.Name
 		if rel, err := filepath.Rel(b.dir, f.path); err == nil && !strings.HasPrefix(rel, "..") {
@@ -230,6 +208,30 @@ func (s *server) download(w http.ResponseWriter, r *http.Request, user, token st
 	if err := zw.Close(); err != nil {
 		log.Printf("download %s: %v", b.ID, err)
 	}
+}
+
+// zipFile adds the file at path to a zip as name.
+func zipFile(zw *zip.Writer, name, path string, method uint16) error {
+	fh, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	info, err := fh.Stat()
+	if err != nil {
+		return err
+	}
+	hdr, err := zip.FileInfoHeader(info)
+	if err != nil {
+		return err
+	}
+	hdr.Name, hdr.Method = name, method
+	out, err := zw.CreateHeader(hdr)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, fh)
+	return err
 }
 
 // contentDisposition names a download, plainly for old clients and in full (RFC 5987)
@@ -261,9 +263,8 @@ func urlPathEscape(s string) string {
 // matchBook looks the book up with a provider. Title and author default to the
 // book's own, so a bare GET is the usual "find this book".
 func (s *server) matchBook(w http.ResponseWriter, r *http.Request, user, token string) {
-	b := s.lib.book(r.PathValue("bookId"))
+	b := s.bookOr404(w, r, user)
 	if b == nil {
-		writeError(w, http.StatusNotFound, "no such book")
 		return
 	}
 	q := r.URL.Query()
@@ -288,8 +289,7 @@ func firstAuthor(a string) string {
 // in by hand. Its coverUrl, when set, is fetched and kept as the book's cover.
 func (s *server) putMetadata(w http.ResponseWriter, r *http.Request, user, token string) {
 	id := r.PathValue("bookId")
-	if s.lib.book(id) == nil {
-		writeError(w, http.StatusNotFound, "no such book")
+	if s.bookOr404(w, r, user) == nil {
 		return
 	}
 	var in MatchCandidate
@@ -321,19 +321,18 @@ func (s *server) putMetadata(w http.ResponseWriter, r *http.Request, user, token
 
 func (s *server) deleteMetadata(w http.ResponseWriter, r *http.Request, user, token string) {
 	id := r.PathValue("bookId")
-	if s.lib.book(id) == nil {
-		writeError(w, http.StatusNotFound, "no such book")
+	if s.bookOr404(w, r, user) == nil {
 		return
 	}
 	clearOverride(s.lib.dataDir, id)
 	s.afterMetadataChange(w, id)
 }
 
-// afterMetadataChange rescans, so the catalogue (and every device's next sync) has
-// the change, and answers with the book as it now is.
+// afterMetadataChange reads the book again, so the catalogue (and every device's next
+// sync) has the change, and answers with the book as it now is.
 func (s *server) afterMetadataChange(w http.ResponseWriter, id string) {
-	if err := s.lib.rescan(); err != nil {
-		log.Printf("scan: %v", err)
+	if err := s.lib.rebuildBook(id); err != nil {
+		log.Printf("rebuild %s: %v", id, err)
 	}
 	b := s.lib.book(id)
 	if b == nil {

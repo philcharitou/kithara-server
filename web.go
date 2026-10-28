@@ -34,11 +34,13 @@ func (s *server) webHandler() http.Handler {
 	})
 }
 
-// ------------------------------------------------------------------ download links
+// ------------------------------------------------------------------ signed links
 
-// Download links let something that cannot send a bearer header (a browser's own
-// download, a phone's download manager) fetch one book's zip for a few minutes. They
-// are signed with a key that lives only in memory, so a restart voids them all.
+// Signed links let something that cannot send a bearer header (an <audio> element, a
+// browser's own download, a phone's download manager) fetch one book's audio or zip
+// for a while. Each is for one user, one book and one purpose; it is signed with a key
+// that lives only in memory (a restart voids them all) and with the user's password
+// salt (a password change voids theirs). See signedOr in features.go.
 
 const downloadLinkTTL = 10 * time.Minute
 
@@ -48,23 +50,28 @@ func newLinkKey() []byte {
 	return k
 }
 
-func (s *server) linkSig(user, bookID string, exp int64) string {
+func (s *server) linkSig(user, purpose, bookID string, exp int64) string {
 	m := hmac.New(sha256.New, s.linkKey)
-	m.Write([]byte(user + "\x00" + bookID + "\x00" + strconv.FormatInt(exp, 10)))
+	m.Write([]byte(user + "\x00" + s.store.linkSecret(user) + "\x00" + purpose + "\x00" + bookID + "\x00" + strconv.FormatInt(exp, 10)))
 	return hex.EncodeToString(m.Sum(nil))
+}
+
+// signedQuery is the ?u=&exp=&sig= of a link good for ttl.
+func (s *server) signedQuery(user, purpose, bookID string, ttl time.Duration) (string, int64) {
+	exp := time.Now().Add(ttl).Unix()
+	q := url.Values{"u": {user}, "exp": {strconv.FormatInt(exp, 10)}, "sig": {s.linkSig(user, purpose, bookID, exp)}}
+	return q.Encode(), exp
 }
 
 // downloadLink answers with a signed, short-lived address for the book's zip.
 func (s *server) downloadLink(w http.ResponseWriter, r *http.Request, user, token string) {
-	b := s.lib.bookFor(s.acct(user), r.PathValue("bookId"))
+	b := s.bookOr404(w, r, user)
 	if b == nil {
-		writeError(w, http.StatusNotFound, "no such book")
 		return
 	}
-	exp := time.Now().Add(downloadLinkTTL).Unix()
-	q := url.Values{"u": {user}, "exp": {strconv.FormatInt(exp, 10)}, "sig": {s.linkSig(user, b.ID, exp)}}
+	q, exp := s.signedQuery(user, "zip", b.ID, downloadLinkTTL)
 	writeJSONResponse(w, 200, map[string]any{
-		"url":       "/api/books/" + url.PathEscape(b.ID) + "/download?" + q.Encode(),
+		"url":       "/api/books/" + url.PathEscape(b.ID) + "/download?" + q,
 		"expiresAt": exp * 1000,
 	})
 }

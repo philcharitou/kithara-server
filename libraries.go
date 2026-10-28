@@ -124,27 +124,17 @@ func (l *library) storeLibrary(name, path string) error {
 		return err
 	}
 	l.scanMu.Lock()
+	defer l.scanMu.Unlock()
 	if _, ok := l.catalogueRoot(name); ok {
-		l.scanMu.Unlock()
 		return errLibraryExists
 	}
 	specs, err := l.readStored()
-	if err == nil {
-		specs = append(specs, libSpec{Name: name, Path: path})
-		err = writeJSON(l.storedPath(), specs)
-	}
-	l.scanMu.Unlock()
 	if err != nil {
 		return err
 	}
-	return l.syncAfterWrite()
-}
-
-// syncAfterWrite takes in a libraries.json just written, so the roots match it before
-// the next scan.
-func (l *library) syncAfterWrite() error {
-	l.scanMu.Lock()
-	defer l.scanMu.Unlock()
+	if err := writeJSON(l.storedPath(), append(specs, libSpec{Name: name, Path: path})); err != nil {
+		return err
+	}
 	return l.syncStored()
 }
 
@@ -161,30 +151,28 @@ func (l *library) removeLibrary(name string) error {
 // unstoreLibrary takes a library out of libraries.json, without scanning.
 func (l *library) unstoreLibrary(name string) error {
 	l.scanMu.Lock()
+	defer l.scanMu.Unlock()
 	r, ok := l.catalogueRoot(name)
 	if !ok {
-		l.scanMu.Unlock()
 		return errNoLibrary
 	}
 	if r.fixed {
-		l.scanMu.Unlock()
 		return errLibraryFixed
 	}
 	specs, err := l.readStored()
-	if err == nil {
-		kept := specs[:0]
-		for _, sp := range specs {
-			if !strings.EqualFold(sp.Name, r.name) {
-				kept = append(kept, sp)
-			}
-		}
-		err = writeJSON(l.storedPath(), kept)
-	}
-	l.scanMu.Unlock()
 	if err != nil {
 		return err
 	}
-	return l.syncAfterWrite()
+	kept := specs[:0]
+	for _, sp := range specs {
+		if !strings.EqualFold(sp.Name, r.name) {
+			kept = append(kept, sp)
+		}
+	}
+	if err := writeJSON(l.storedPath(), kept); err != nil {
+		return err
+	}
+	return l.syncStored()
 }
 
 func (l *library) catalogueRoot(name string) (*libRoot, bool) {
@@ -211,9 +199,8 @@ func (s *server) addLibraryHandler(w http.ResponseWriter, r *http.Request, user,
 	case errors.Is(err, errLibraryExists):
 		writeError(w, http.StatusConflict, err.Error())
 		return
-	case err != nil && !strings.HasPrefix(err.Error(), "library "):
-		// A scan error names the library ("library X (path): ..."); anything else
-		// means it was not added.
+	case err != nil && !errors.As(err, new(scanError)):
+		// A scan error (some library unreadable) still added it; anything else did not.
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -233,7 +220,7 @@ func (s *server) removeLibraryHandler(w http.ResponseWriter, r *http.Request, us
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, errLibraryFixed):
 		writeError(w, http.StatusConflict, err.Error())
-	case err != nil && !strings.HasPrefix(err.Error(), "library "):
+	case err != nil && !errors.As(err, new(scanError)):
 		writeError(w, http.StatusInternalServerError, err.Error())
 	default:
 		w.WriteHeader(http.StatusNoContent)
@@ -258,9 +245,8 @@ func (s *server) browse(w http.ResponseWriter, r *http.Request, user, token stri
 		return
 	}
 	type dir struct {
-		Name  string `json:"name"`
-		Path  string `json:"path"`
-		Audio int    `json:"audio"` // audio files directly inside, as a hint
+		Name string `json:"name"`
+		Path string `json:"path"`
 	}
 	dirs := []dir{}
 	audio := 0

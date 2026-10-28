@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -27,9 +26,8 @@ import (
 // ------------------------------------------------------------------ signed links
 
 // signedOr serves h to a bearer token, or to a request carrying a valid signed link
-// (?u, ?exp, ?sig) for the book in its path, for things that cannot send a header: a
-// browser's <audio>, its downloads, a phone's download manager.
-func (s *server) signedOr(h userHandler) http.HandlerFunc {
+// (?u, ?exp, ?sig) for this purpose and the book in its path.
+func (s *server) signedOr(purpose string, h userHandler) http.HandlerFunc {
 	bearer := s.withUser(h)
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -39,13 +37,10 @@ func (s *server) signedOr(h userHandler) http.HandlerFunc {
 		}
 		user := q.Get("u")
 		exp, err := strconv.ParseInt(q.Get("exp"), 10, 64)
-		want := s.linkSig(user, r.PathValue("bookId"), exp)
-		if err != nil || time.Now().Unix() > exp || subtle.ConstantTimeCompare([]byte(want), []byte(q.Get("sig"))) != 1 {
-			writeError(w, http.StatusForbidden, "this link is not valid or has expired")
-			return
-		}
+		want := s.linkSig(user, purpose, r.PathValue("bookId"), exp)
 		// The user must still exist; the handler checks they may still see the book.
-		if _, ok := s.store.account(user); !ok {
+		_, exists := s.store.account(user)
+		if err != nil || !exists || time.Now().Unix() > exp || subtle.ConstantTimeCompare([]byte(want), []byte(q.Get("sig"))) != 1 {
 			writeError(w, http.StatusForbidden, "this link is not valid or has expired")
 			return
 		}
@@ -58,13 +53,11 @@ const streamLinkTTL = 12 * time.Hour
 // streamLink answers with signed addresses for each of a book's files, good for long
 // enough to listen to it in one sitting.
 func (s *server) streamLink(w http.ResponseWriter, r *http.Request, user, token string) {
-	b := s.lib.bookFor(s.acct(user), r.PathValue("bookId"))
+	b := s.bookOr404(w, r, user)
 	if b == nil {
-		writeError(w, http.StatusNotFound, "no such book")
 		return
 	}
-	exp := time.Now().Add(streamLinkTTL).Unix()
-	q := url.Values{"u": {user}, "exp": {strconv.FormatInt(exp, 10)}, "sig": {s.linkSig(user, b.ID, exp)}}.Encode()
+	q, exp := s.signedQuery(user, "audio", b.ID, streamLinkTTL)
 	files := make([]map[string]any, 0, len(b.Files))
 	for _, f := range b.Files {
 		files = append(files, map[string]any{"index": f.Index, "url": f.URL + "?" + q, "durationMs": f.DurationMs})
@@ -88,8 +81,7 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request, user, to
 	now := time.Now()
 	key := "user:" + strings.ToLower(user)
 	if wait := s.userLimit.retryAfter(key, now); wait > 0 {
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		writeError(w, http.StatusTooManyRequests, "too many wrong passwords; try again later")
+		tooMany(w, wait, "too many wrong passwords; try again later")
 		return
 	}
 	if !s.store.checkPassword(user, in.Current) {
@@ -204,20 +196,14 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user, token stri
 // putCover keeps an uploaded picture as the book's cover, beside its saved metadata.
 func (s *server) putCover(w http.ResponseWriter, r *http.Request, user, token string) {
 	id := r.PathValue("bookId")
-	if s.lib.book(id) == nil {
-		writeError(w, http.StatusNotFound, "no such book")
+	if s.bookOr404(w, r, user) == nil {
 		return
 	}
-	data, err := io.ReadAll(io.LimitReader(r.Body, 15<<20+1))
+	data, err := readCover(r.Body)
+	if err == nil {
+		err = saveCoverData(s.lib.dataDir, id, data)
+	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if len(data) > 15<<20 {
-		writeError(w, http.StatusBadRequest, "pictures up to 15 MB")
-		return
-	}
-	if err := saveCoverData(s.lib.dataDir, id, data); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -226,16 +212,10 @@ func (s *server) putCover(w http.ResponseWriter, r *http.Request, user, token st
 
 func (s *server) deleteCover(w http.ResponseWriter, r *http.Request, user, token string) {
 	id := r.PathValue("bookId")
-	if s.lib.book(id) == nil {
-		writeError(w, http.StatusNotFound, "no such book")
+	if s.bookOr404(w, r, user) == nil {
 		return
 	}
-	for {
-		p, _ := overrideCover(s.lib.dataDir, id)
-		if p == "" || os.Remove(p) != nil {
-			break
-		}
-	}
+	removeOverrideCovers(s.lib.dataDir, id)
 	s.afterMetadataChange(w, id)
 }
 
@@ -246,9 +226,8 @@ func (s *server) deleteCover(w http.ResponseWriter, r *http.Request, user, token
 // length.
 func (s *server) putChapters(w http.ResponseWriter, r *http.Request, user, token string) {
 	id := r.PathValue("bookId")
-	b := s.lib.book(id)
+	b := s.bookOr404(w, r, user)
 	if b == nil {
-		writeError(w, http.StatusNotFound, "no such book")
 		return
 	}
 	var in struct {
@@ -450,26 +429,7 @@ func (s *server) backup(w http.ResponseWriter, r *http.Request, user, token stri
 		if !keep || strings.HasSuffix(rel, ".tmp") {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		hdr, err := zip.FileInfoHeader(info)
-		if err != nil {
-			return err
-		}
-		hdr.Name, hdr.Method = rel, zip.Deflate
-		out, err := zw.CreateHeader(hdr)
-		if err != nil {
-			return err
-		}
-		f, err := os.Open(p)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		_, err = io.Copy(out, f)
-		return err
+		return zipFile(zw, rel, p, zip.Deflate)
 	})
 	if err == nil {
 		err = zw.Close()

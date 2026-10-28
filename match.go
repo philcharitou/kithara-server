@@ -106,11 +106,10 @@ func (m *matcher) search(q MatchQuery) ([]MatchCandidate, error) {
 }
 
 func (m *matcher) getJSON(u string, v any) error {
-	req, err := http.NewRequest("GET", u, nil)
+	req, err := newRequest(u)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "kithara-server/"+serverVersion)
 	req.Header.Set("Accept", "application/json")
 	res, err := m.client.Do(req)
 	if err != nil {
@@ -351,7 +350,7 @@ func overrideMeta(dataDir, id string) (bookMeta, int64) {
 // overrideCover finds a cover kept for a book.
 func overrideCover(dataDir, id string) (string, int64) {
 	for _, ext := range []string{".jpg", ".png", ".webp"} {
-		p := filepath.Join(dataDir, "covers", id+"-match"+ext)
+		p := overrideCoverPath(dataDir, id, ext)
 		if info, err := os.Stat(p); err == nil {
 			return p, info.ModTime().UnixMilli()
 		}
@@ -406,12 +405,39 @@ func saveOverride(dataDir, id string, c MatchCandidate) error {
 // clearOverride forgets the metadata and cover kept for a book.
 func clearOverride(dataDir, id string) {
 	_ = os.Remove(overridePath(dataDir, id))
+	removeOverrideCovers(dataDir, id)
+}
+
+// removeOverrideCovers forgets every cover kept for a book.
+func removeOverrideCovers(dataDir, id string) {
 	for {
 		p, _ := overrideCover(dataDir, id)
 		if p == "" || os.Remove(p) != nil {
 			return
 		}
 	}
+}
+
+func overrideCoverPath(dataDir, id, ext string) string {
+	return filepath.Join(dataDir, "covers", id+"-match"+ext)
+}
+
+// readCover reads a cover picture of at most 15 MB.
+func readCover(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, 15<<20+1))
+	if err == nil && len(data) > 15<<20 {
+		err = errors.New("pictures up to 15 MB")
+	}
+	return data, err
+}
+
+// newRequest is a GET that says who is asking.
+func newRequest(u string) (*http.Request, error) {
+	req, err := http.NewRequest("GET", u, nil)
+	if err == nil {
+		req.Header.Set("User-Agent", "kithara-server/"+serverVersion)
+	}
+	return req, err
 }
 
 // coverHosts are where the providers keep their artwork. Covers are fetched only from
@@ -446,8 +472,7 @@ func (m *matcher) saveCover(dataDir, id, rawURL string) error {
 		}
 		return nil
 	}
-	req, _ := http.NewRequest("GET", u.String(), nil)
-	req.Header.Set("User-Agent", "kithara-server/"+serverVersion)
+	req, _ := newRequest(u.String())
 	res, err := client.Do(req)
 	if err != nil {
 		return err
@@ -456,12 +481,9 @@ func (m *matcher) saveCover(dataDir, id, rawURL string) error {
 	if res.StatusCode != 200 {
 		return fmt.Errorf("cover: %s", res.Status)
 	}
-	data, err := io.ReadAll(io.LimitReader(res.Body, 15<<20+1))
+	data, err := readCover(res.Body)
 	if err != nil {
 		return err
-	}
-	if len(data) > 15<<20 {
-		return errors.New("cover is over 15 MB")
 	}
 	return saveCoverData(dataDir, id, data)
 }
@@ -483,15 +505,10 @@ func saveCoverData(dataDir, id string, data []byte) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	for {
-		p, _ := overrideCover(dataDir, id)
-		if p == "" || os.Remove(p) != nil {
-			break
-		}
-	}
-	tmp := filepath.Join(dir, id+"-match"+ext+".tmp")
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	removeOverrideCovers(dataDir, id)
+	dst := overrideCoverPath(dataDir, id, ext)
+	if err := os.WriteFile(dst+".tmp", data, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(dir, id+"-match"+ext))
+	return os.Rename(dst+".tmp", dst)
 }
