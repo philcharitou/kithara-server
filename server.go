@@ -25,12 +25,13 @@ type server struct {
 	ipLimit, userLimit *loginLimiter
 	trustProxy         bool // take the client address from X-Forwarded-For
 
-	match *matcher
+	match   *matcher
+	linkKey []byte // signs download links
 }
 
 func newServer(st *store, lib *library, name string) *server {
 	s := &server{store: st, lib: lib, name: name, mux: http.NewServeMux(),
-		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher()}
+		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher(), linkKey: newLinkKey()}
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.health)
 	m.HandleFunc("POST /api/auth", s.auth)
@@ -50,7 +51,8 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("HEAD /audio/{bookId}/{index}", s.withUser(s.audio))
 	m.HandleFunc("GET /covers/{bookId}", s.withUser(s.cover))
 	m.HandleFunc("HEAD /covers/{bookId}", s.withUser(s.cover))
-	m.HandleFunc("GET /api/books/{bookId}/download", s.withUser(s.download))
+	m.HandleFunc("GET /api/books/{bookId}/download", s.downloadRoute)
+	m.HandleFunc("POST /api/books/{bookId}/download-link", s.withUser(s.downloadLink))
 
 	m.HandleFunc("GET /api/me", s.withUser(s.me))
 	m.HandleFunc("GET /api/devices", s.withUser(s.listDevices))
@@ -64,13 +66,13 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("GET /api/books/{bookId}/match", s.withAdmin(s.matchBook))
 	m.HandleFunc("PUT /api/books/{bookId}/metadata", s.withAdmin(s.putMetadata))
 	m.HandleFunc("DELETE /api/books/{bookId}/metadata", s.withAdmin(s.deleteMetadata))
+	web := s.webHandler()
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Write([]byte("kithara-server " + serverVersion + "\nThis is a Kithara sync server. Add it in the Kithara app under Add a library > Kithara sync server.\n"))
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.Method != "GET" && r.Method != "HEAD" {
+			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
-		writeError(w, http.StatusNotFound, "not found")
+		web.ServeHTTP(w, r)
 	})
 	return s
 }

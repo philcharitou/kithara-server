@@ -29,6 +29,12 @@ your user name and password. The app checks `/api/health`, signs in, and syncs.
 
 `kithara-server scan --library ~/Audiobooks` prints what the server sees without serving.
 
+**The web page.** Open the server's address in a browser (`http://your-machine:8080`)
+and sign in with the same account. Everyone can browse their libraries, see their
+listening stats, download a book as a zip, and sign out their devices. Admins can also
+rescan, find and edit metadata (with covers), and manage users and their library access.
+It's part of the binary and uses the same API as the apps.
+
 **More than one library.** Give `--library` once per folder, optionally named:
 
 ```bash
@@ -239,6 +245,10 @@ Everything the app talks is in the protocol document. Server specifics:
   Admin-only routes answer `403` to plain users.
 - **Download:** `GET /api/books/{bookId}/download` sends the whole book as a zip: its
   files under their paths in the book folder (so disc folders stay apart), plus its cover.
+  `POST /api/books/{bookId}/download-link` returns a `url` for the same zip that needs no
+  Authorization header for 10 minutes, for browsers and system download managers. Links
+  are signed with a key held only in memory, so a restart voids them.
+- How the apps can use all of this: [docs/app-integration.md](docs/app-integration.md).
 - **Metadata (admin):** `GET /api/books/{bookId}/match?provider=audible|openlibrary|google`
   searches by the book's own title and author, or by `title`, `author`, `asin` (Audible)
   and `region` (Audible: us, uk, ca, au, de, fr, it, es, in, jp). Each result is a set of

@@ -177,7 +177,9 @@ func (m *matcher) audible(q MatchQuery) ([]MatchCandidate, error) {
 			Publisher: p.Publisher, Description: stripHTML(p.Summary), PublishedYear: yearOf(p.ReleaseDate),
 			Language: p.Language, DurationMs: p.RuntimeLengthMin * 60_000}
 		for _, a := range p.Authors {
-			c.Authors = append(c.Authors, a.Name)
+			if name, ok := audibleAuthor(a.Name); ok {
+				c.Authors = append(c.Authors, name)
+			}
 		}
 		for _, n := range p.Narrators {
 			c.Narrators = append(c.Narrators, n.Name)
@@ -203,6 +205,22 @@ func (m *matcher) audible(q MatchQuery) ([]MatchCandidate, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// audibleAuthor drops the translators, editors and the like that Audible lists among
+// the authors, written "Name - Translator".
+func audibleAuthor(name string) (string, bool) {
+	for _, sep := range []string{" - ", " – ", " — "} {
+		if i := strings.LastIndex(name, sep); i > 0 {
+			switch strings.ToLower(strings.TrimSpace(name[i+len(sep):])) {
+			case "author", "":
+				return strings.TrimSpace(name[:i]), true
+			default:
+				return "", false
+			}
+		}
+	}
+	return strings.TrimSpace(name), name != ""
 }
 
 // ------------------------------------------------------------------ Open Library

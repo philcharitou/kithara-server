@@ -11,8 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A server over two libraries with an admin (phil, the first user) and a child who
@@ -451,5 +453,83 @@ func TestSplitArgs(t *testing.T) {
 	pos := splitArgs(fs, []string{"role", "--data", "/d", "phil", "--admin", "admin"})
 	if strings.Join(pos, " ") != "role phil admin" || *data != "/d" || !*admin {
 		t.Fatalf("got %v data=%q admin=%v", pos, *data, *admin)
+	}
+}
+
+func TestWebPage(t *testing.T) {
+	ts, _ := newTestServer(t)
+	res, body := call(t, ts, "GET", "/", "", nil)
+	if res.StatusCode != 200 || !strings.Contains(string(body), `<script type="module" src="app.js">`) ||
+		!strings.Contains(res.Header.Get("Content-Security-Policy"), "script-src 'self'") {
+		t.Fatalf("page: %d %v", res.StatusCode, res.Header)
+	}
+	if res, _ := call(t, ts, "GET", "/app.js", "", nil); res.StatusCode != 200 {
+		t.Fatalf("app.js gave %d", res.StatusCode)
+	}
+	// Unknown API routes stay JSON errors, not the page.
+	res, body = call(t, ts, "GET", "/api/nope", "", nil)
+	if res.StatusCode != 404 || !strings.Contains(string(body), `"error"`) {
+		t.Fatalf("unknown api route: %d %s", res.StatusCode, body)
+	}
+}
+
+func TestDownloadLinks(t *testing.T) {
+	ts, srv, _, _ := twoLibraryServer(t)
+	admin := loginAs(t, ts, "phil", "correct horse", "laptop")
+	kid := loginAs(t, ts, "kid", "battery staple", "tablet")
+	books := catalogueOf(t, ts, admin, "").Books
+	var gruffalo, other Book
+	for _, b := range books {
+		if b.Library == "Kids" {
+			gruffalo = b
+		} else {
+			other = b
+		}
+	}
+	res, body := call(t, ts, "POST", "/api/books/"+gruffalo.ID+"/download-link", kid, nil)
+	var link struct {
+		URL       string
+		ExpiresAt int64
+	}
+	json.Unmarshal(body, &link)
+	if res.StatusCode != 200 || link.URL == "" || strings.Contains(link.URL, kid) {
+		t.Fatalf("link: %d %s", res.StatusCode, body)
+	}
+	if res, _ := call(t, ts, "GET", link.URL, "", nil); res.StatusCode != 200 || res.Header.Get("Content-Type") != "application/zip" {
+		t.Fatalf("link without a token gave %d", res.StatusCode)
+	}
+	for name, u := range map[string]string{
+		"another book": strings.Replace(link.URL, gruffalo.ID, other.ID, 1),
+		"another user": strings.Replace(link.URL, "u=kid", "u=phil", 1),
+		"later expiry": strings.Replace(link.URL, "exp=", "exp=9", 1),
+		"bad sig":      link.URL[:len(link.URL)-4] + "0000",
+	} {
+		if res, _ := call(t, ts, "GET", u, "", nil); res.StatusCode != 403 {
+			t.Errorf("%s gave %d", name, res.StatusCode)
+		}
+	}
+	// No links to books the user may not see; and a link outlives nothing.
+	if res, _ := call(t, ts, "POST", "/api/books/"+other.ID+"/download-link", kid, nil); res.StatusCode != 404 {
+		t.Fatalf("link to a hidden book gave %d", res.StatusCode)
+	}
+	exp := time.Now().Add(-time.Minute).Unix()
+	q := url.Values{"u": {"kid"}, "exp": {strconv.FormatInt(exp, 10)}, "sig": {srv.linkSig("kid", gruffalo.ID, exp)}}
+	if res, _ := call(t, ts, "GET", "/api/books/"+gruffalo.ID+"/download?"+q.Encode(), "", nil); res.StatusCode != 403 {
+		t.Fatalf("expired link gave %d", res.StatusCode)
+	}
+}
+
+func TestAudibleAuthor(t *testing.T) {
+	for in, want := range map[string]string{
+		"J. R. R. Tolkien":            "J. R. R. Tolkien",
+		"Walter Scherf - Translator":  "",
+		"Heinz-Dieter Köhler — Other": "",
+		"Jane Doe - Author":           "Jane Doe",
+		"Jean-Paul Sartre":            "Jean-Paul Sartre",
+	} {
+		got, ok := audibleAuthor(in)
+		if got != want || ok != (want != "") {
+			t.Errorf("%q: got %q %v", in, got, ok)
+		}
 	}
 }
