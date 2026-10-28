@@ -111,3 +111,39 @@ func limitKey(ip string) string {
 	}
 	return ip
 }
+
+// knownClients remembers which addresses have signed in to which accounts, for a month.
+// The per-account limit does not apply to them: someone guessing at an account can
+// stop new sign-ins to it from elsewhere for a while, but not from the owner's own
+// networks (whose addresses still have their own, per-address limit).
+type knownClients struct {
+	mu   sync.Mutex
+	seen map[string]time.Time // user + "\x00" + address key -> last sign-in
+}
+
+const knownFor = 30 * 24 * time.Hour
+
+func newKnownClients() *knownClients { return &knownClients{seen: map[string]time.Time{}} }
+
+func (k *knownClients) has(user, key string, now time.Time) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	t, ok := k.seen[strings.ToLower(user)+"\x00"+key]
+	return ok && now.Sub(t) < knownFor
+}
+
+func (k *knownClients) add(user, key string, now time.Time) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if len(k.seen) > 10000 {
+		for id, t := range k.seen {
+			if now.Sub(t) >= knownFor {
+				delete(k.seen, id)
+			}
+		}
+		if len(k.seen) > 10000 {
+			clear(k.seen)
+		}
+	}
+	k.seen[strings.ToLower(user)+"\x00"+key] = now
+}

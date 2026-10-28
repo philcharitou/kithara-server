@@ -169,7 +169,7 @@ func (s *store) allProgress(user string) ([]Progress, error) {
 // An accepted record also adds to the user's listening sessions; token says which
 // device it came from.
 func (s *store) putProgress(user, token string, in Progress) (Progress, bool, error) {
-	device := s.deviceName(token)
+	device := s.tokenInfo(token)
 	defer s.lockUser(user)()
 	m := map[string]Progress{}
 	if err := readJSON(s.progressPath(user), &m); err != nil {
@@ -203,8 +203,8 @@ func (s *store) putProgress(user, token string, in Progress) (Progress, bool, er
 	if err := writeJSON(s.progressPath(user), m); err != nil {
 		return Progress{}, false, err
 	}
-	if had {
-		if err := s.recordListening(user, device, cur, in); err != nil {
+	if had && !device.Reports {
+		if err := s.recordListening(user, device.Device, cur, in); err != nil {
 			log.Printf("sessions for %s: %v", user, err)
 		}
 	}

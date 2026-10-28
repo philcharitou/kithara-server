@@ -35,7 +35,8 @@ type userRecord struct {
 	Hash      string   `json:"hash"`
 	Iter      int      `json:"iter"`
 	Role      string   `json:"role,omitempty"`
-	Libraries []string `json:"libraries,omitempty"` // empty: all of them
+	Libraries []string `json:"libraries,omitempty"`   // empty: all of them
+	Subject   string   `json:"oidcSubject,omitempty"` // issuer and subject at the identity provider
 }
 
 type tokenRecord struct {
@@ -43,6 +44,9 @@ type tokenRecord struct {
 	Device     string `json:"device,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
 	LastSeenAt int64  `json:"lastSeenAt,omitempty"`
+	// The device sends its own listening sessions (POST /api/sessions), so the server
+	// no longer estimates them from its progress uploads.
+	Reports bool `json:"reportsSessions,omitempty"`
 }
 
 // Account is a user as the API and the command line show it.
@@ -332,11 +336,36 @@ func (s *store) dropTokensLocked(name string) {
 	}
 }
 
-// deviceName is the name a token was issued to.
-func (s *store) deviceName(token string) string {
+// tokenInfo is what a token was issued to.
+func (s *store) tokenInfo(token string) tokenRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.tokens[token].Device
+	return s.tokens[token]
+}
+
+// markReporting notes that a device sends its own sessions.
+func (s *store) markReporting(token string) error {
+	s.lockFresh()
+	defer s.mu.Unlock()
+	rec, ok := s.tokens[token]
+	if !ok || rec.Reports {
+		return nil
+	}
+	rec.Reports = true
+	s.tokens[token] = rec
+	return s.saveTokens()
+}
+
+// hasDevice reports whether the user still has the device with this id signed in.
+func (s *store) hasDevice(user, id string) bool {
+	s.lockFresh()
+	defer s.mu.Unlock()
+	for t, rec := range s.tokens {
+		if rec.User == user && deviceID(t) == id {
+			return true
+		}
+	}
+	return false
 }
 
 // maxDevices is how many devices one user may have signed in; signing in on one more

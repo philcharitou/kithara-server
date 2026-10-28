@@ -1,195 +1,304 @@
-# Using kithara-server 0.2 from the apps
+# Using kithara-server's extensions from the apps
 
-What the Android and iOS clients need to do to use what kithara-server 0.2.0 added.
-Everything here **extends** protocol version 1: `/api/health` still says `protocol: 1`,
-and a client that does none of it keeps working exactly as before. All of it is
-optional, so detect it rather than assume it: a route that answers `404` means an
-older or different server, and the feature should stay hidden.
+What the Android and iOS clients need to do to use what kithara-server has added on
+top of the sync protocol, from 0.2 up to the current main branch. Everything here
+**extends** protocol version 1: `/api/health` still says `protocol: 1`, and a client
+that does none of it keeps working exactly as before.
 
-Every call below is bearer-authenticated, like the rest of the protocol. Times are
-epoch milliseconds, as in the protocol.
+Detect features rather than assume them. `/api/health` now lists them:
 
-The server's README lists every route; this document covers what is worth building
-and in what order.
+```json
+{ "ok": true, "protocol": 1, "name": "Phil's shelf", "version": "0.5.1",
+  "features": ["collections", "playlists", "reportedSessions", "oidc"] }
+```
+
+Anything older has no `features`. In that case, a route that answers `404` means the
+server doesn't have it, and the feature should stay hidden.
+
+Every call below is bearer-authenticated unless it says otherwise. Times are epoch
+milliseconds, as in the protocol. The server's README lists every route; this document
+covers what is worth building and in what order. The checklist for each app is at the
+end.
 
 ---
 
 ## 1. Small fixes with a big effect (do these first)
 
-These are gaps in the current clients (see §10 and §11 of the protocol document), and
-the new server features depend on them.
-
-| What | Why it matters now |
+| What | Why it matters |
 |---|---|
-| **Send `device` on `POST /api/auth`** (Android doesn't; iOS does). Use the device's user-visible name, e.g. "Pixel 9". | It is the name shown in the device list on the web page and in `GET /api/devices`. Without it, devices show as "Unnamed" and nobody can tell which to sign out. |
-| **Send `speed` on `PUT /api/progress`** whenever it isn't 1.0 (neither app does). | The server estimates listening time from the gap between two progress uploads. At 2x, a 40-minute jump in position is 20 minutes of listening. Without `speed` the server assumes 1x, so stats come out too high for fast listeners. |
-| **Treat `429` on `POST /api/auth` as "too many tries"**, and show `Retry-After` (seconds) if you like. | Sign-in is now limited to 10 failures per address and 30 per account in 15 minutes. The protocol already says 429 means retry later; the sign-in screen just needs a sensible message instead of a generic error. |
-| **Treat `403` as "not allowed", not "sign in again"**. | Admin-only routes answer `403` to plain users. Only `401` means the token is dead. |
+| **Send `device` on `POST /api/auth`.** Use the user-visible device name, e.g. "Pixel 9". | It names the device in the devices list and in listening sessions. Without it, devices show as "Unnamed" and nobody can tell which one to sign out. Names are cut to 64 characters. |
+| **Send `speed` on `PUT /api/progress`** whenever it isn't 1.0. | Until an app reports its own sessions (§6), the server estimates listening time from the gap between two uploads. At 2x, a 40-minute jump is 20 minutes of listening. Without `speed`, the server can't tell a fast listener from a seek. |
+| **Treat `429` and `503` on `POST /api/auth` as "try again later".** `429` comes with `Retry-After` in seconds. | Sign-in allows 10 failures per address and 30 per account in 15 minutes. `503` means too many password checks are already running. Neither one means the password is wrong. |
+| **Treat `403` as "not allowed", not "sign in again".** | Admin-only routes answer `403` to plain users, and so does an expired signed link. Only `401` means the token is dead. |
 
-## 2. New fields on books (cheap, visible)
+## 2. New fields on books
 
-`GET /api/library` books can now carry these extra fields, each omitted when unknown:
+`GET /api/library` books can carry these extra fields, each left out when unknown:
 
 ```json
-{
-  "library": "Kids",
-  "subtitle": "A Novel",
-  "genres": ["Literary", "Fiction"],
-  "publisher": "Tidewater",
-  "publishedYear": "2019",
-  "language": "english",
-  "isbn": "9781234567897",
-  "asin": "B0STAR"
-}
+{ "library": "Kids", "subtitle": "A Novel", "description": "…", "genres": ["Literary"],
+  "publisher": "Tidewater", "publishedYear": "2019", "language": "english",
+  "isbn": "9781234567897", "asin": "B0STAR" }
 ```
 
-`author`, `narrator`, `series`, `seriesIndex` and `description` are now filled far more
-often too: from folder names (`Author/Series/3 - Title {Narrator}`), `.opf`,
-`desc.txt`/`reader.txt`, audiobookshelf's `metadata.json`, and metadata an admin has
-matched on the server.
+Files can also carry `mimeType`.
 
-- Store the new fields and show them on the book screen: subtitle under the title,
-  genres as chips, and year · publisher.
-- **Sort and group by series** using `series` + `seriesIndex`. These are much more
-  reliable now.
-- A book's `updatedAt` moves whenever its metadata or cover changes, including when an
-  admin matches it, so the existing "skip unchanged books" logic already picks those
-  changes up. Make sure the cover is fetched again when `updatedAt` changes (the
-  protocol already says to).
+- Store the new fields and show them on the book screen: the subtitle under the title,
+  genres as chips, and the year and publisher.
+- `author`, `narrator`, `series` and `seriesIndex` are filled much more often now, from
+  folder names, `.opf`, `desc.txt`, audiobookshelf's `metadata.json`, and admin edits.
+  Sorting and grouping by series is worth adding.
+- A book's `updatedAt` moves whenever an admin changes its details, cover or chapters.
+  The existing "skip unchanged books" logic already picks that up. Fetch the cover again
+  when `updatedAt` changes.
+- The catalogue is sent gzipped, with `ETag` and `Vary: Accept-Encoding`. Both platforms'
+  HTTP stacks decompress it on their own. Send `If-None-Match` to get `304` when nothing
+  has changed.
 
-## 3. Libraries (one server, several shelves)
+## 3. Libraries
 
-The server can serve several folders as named libraries. The protocol is unchanged:
-`GET /api/library` still returns **one** authoritative list, and each book now says
-which library it belongs to.
+One server can serve several folders as named libraries. `GET /api/library` still
+returns **one** authoritative list, and each book says which library it belongs to.
 
 ```
 GET /api/libraries
-{ "libraries": [ { "name": "Audiobooks", "books": 412, "durationMs": 4.1e9, "updatedAt": 1737000000000 },
-                 { "name": "Kids",       "books": 38,  "durationMs": 1.2e8, "updatedAt": 1736000000000 } ] }
+{ "libraries": [ { "name": "Audiobooks", "books": 412, "durationMs": …, "updatedAt": … }, … ] }
 ```
 
-- If there's more than one, offer a **library filter** (chips or a menu) over the books
-  you already have, using `book.library`. No extra request is needed.
-  `GET /api/library?library=Kids` also exists, but **don't use it for sync**: it
-  returns only that library's books, and the sync code would then treat every other
-  book as deleted. Keep full syncs on plain `/api/library`.
-- A user can be limited to some libraries. Their `/api/library` and `/api/libraries`
-  simply leave the rest out, and those books answer `404` everywhere. The existing
-  "book gone → drop it" handling already covers someone losing access.
+- When there is more than one library, offer a filter over the books you already have,
+  using `book.library`.
+- `GET /api/library?library=Kids` also exists, but **don't use it for sync**: the sync
+  code would treat every other book as deleted.
+- A user can be limited to some libraries. The books outside them simply don't exist
+  for that user and answer `404`. The existing "book gone → drop it" handling covers
+  this.
 
-## 4. Who am I, and devices
-
-```
-GET /api/me
-{ "name": "phil", "role": "admin", "libraries": [], "devices": 3 }
-```
-
-`POST /api/auth` also returns `role` now. `role` is `"admin"` or `"user"`. Use it only to
-show or hide admin features; the server enforces access regardless.
+## 4. Account and devices
 
 ```
-GET /api/devices
-{ "devices": [ { "id": "3f9a1c0b2d4e", "name": "Pixel 9", "createdAt": …, "lastSeenAt": …, "current": true }, … ] }
-
-DELETE /api/devices/{id}      → 204, or 404 if already gone
+GET /api/me                  { "name": "phil", "role": "admin", "libraries": [], "devices": 3 }
+GET /api/devices             { "devices": [ { "id", "name", "createdAt", "lastSeenAt", "current" }, … ] }
+DELETE /api/devices/{id}     → 204, or 404 if it is already gone
+PUT /api/me/password         { "current": "…", "new": "…" }  → { "token": "…" }
 ```
 
-- Add a **"Signed-in devices"** screen in the server's settings: the list, with a
-  sign-out action on each. Mark the `current` one; signing it out is the same as
-  removing the library.
-- `lastSeenAt` is only updated about once an hour, so show it as "today",
-  "yesterday", "3 days ago" rather than a time.
-- Admins can add `?user=NAME` to both routes. That's for the web page; the apps don't
-  need it.
+- `POST /api/auth` returns `role` (`"admin"` or `"user"`). Use it only to show or hide
+  admin features; the server enforces access regardless.
+- Add a **"Signed-in devices"** screen to the server's settings, with sign-out on each
+  device and the `current` one marked. `lastSeenAt` is updated about once an hour, so
+  show it as "today" or "3 days ago".
+- **Changing the password** signs out every other device. The answer carries a new
+  token for this device, so **replace the stored token**. The route is rate-limited like
+  sign-in, so it can answer `429` or `503`. A wrong current password gets `403`. A new
+  password needs at least 8 characters.
 
-## 5. Listening stats
+## 5. Signed links: downloads and streaming without a header
 
-The server works out listening sessions from progress uploads, so this works with the
-apps as they are today (and better once they send `speed`, see §1).
-
-```
-GET /api/stats?tzOffset=60          (minutes EAST of UTC, i.e. -Date.getTimezoneOffset())
-{
-  "totalListenedMs": 123456789,
-  "daysListened": 41, "currentStreakDays": 6, "longestStreakDays": 19,
-  "booksStarted": 22, "booksFinished": 14,
-  "days":  [ { "date": "2026-10-27", "listenedMs": 3600000 }, … ],      // only days with listening
-  "books": [ { "bookId": "…", "listenedMs": …, "lastListenedAt": …, "finishedAt": … }, … ]   // most recent first
-}
-
-GET /api/sessions?bookId=…&since=…
-{ "sessions": [ { "id": "ls_…", "bookId": "…", "device": "Pixel 9", "startedAt": …, "endedAt": …,
-                  "startPositionMs": …, "endPositionMs": …, "listenedMs": … } ] }
-```
-
-Progress records also carry `startedAt` and `finishedAt` now. The server maintains them;
-clients don't need to send them.
-
-- If the app already has a stats screen built from on-device data, show the **server's
-  figures for server libraries**, so they cover every device. Label them as an
-  estimate. The protocol keeps on-device stats as they are, so don't replace those.
-- `finishedAt` gives a reliable "Finished on …" and a "finished this year" count.
-- Compute `tzOffset` on every request (it changes with daylight saving).
-
-## 6. Download a whole book
-
-For "save to Files" / "share" / "download in the background with the system
-downloader", where sending a bearer header is awkward:
+For anything that can't send a bearer header (the system download manager, a cast
+target, a player that wants a plain URL):
 
 ```
 POST /api/books/{bookId}/download-link
-{ "url": "/api/books/abc/download?u=phil&exp=1793202478&sig=…", "expiresAt": 1793202478000 }
+{ "url": "/api/books/abc/download?u=…&d=…&exp=…&sig=…", "expiresAt": … }      // the zip, for 10 minutes
+
+POST /api/books/{bookId}/stream-link
+{ "files": [ { "index": 0, "url": "/audio/abc/0?u=…&d=…&exp=…&sig=…", "durationMs": … } ], "expiresAt": … }   // 12 hours
 ```
 
-The `url` (relative to the server root) needs **no** Authorization header and works
-for 10 minutes. It returns a zip: the book's files under their folder paths
-(`CD 1/track 01.m4b`), plus `cover.jpg`/`.png`, stored uncompressed. Use it with
-Android's `DownloadManager` or iOS's background `URLSession`. Don't keep the URL;
-ask for a new one each time.
+URLs are relative to the server root and need no Authorization header. A link is good
+for one book and one purpose, so an audio link won't open the zip. It stops working
+when:
 
-`GET /api/books/{bookId}/download` with the bearer header returns the same zip if
-that's simpler. Offline playback inside the app should keep using the per-file
-`/audio/…` URLs, as now; the zip is for taking a book out of the app.
+- it expires,
+- the user's password changes,
+- **the device that asked for it is signed out**, or
+- the server restarts.
 
-## 7. Admin features (optional in the apps)
+Then it answers `403`. Ask for a new link each time rather than storing one. Offline
+playback inside the app should keep using the per-file `/audio/…` URLs with the bearer
+header, as now.
 
-All of these work from the server's own web page (open the server address in a
-browser), so the apps don't need them. If you want them anyway, only for `role ==
-"admin"`:
+## 6. Listening sessions and stats
 
-- `POST /api/rescan` → `{ "books": N }`. "Refresh library now". Plain users get `403`.
-- `GET /api/books/{id}/match?provider=audible|openlibrary|google[&title=&author=&region=us|uk|…]`
-  → `{ "results": [ { "title", "subtitle", "authors": [], "narrators": [], "series",
-  "seriesIndex", "description", "publisher", "publishedYear", "language", "isbn",
-  "asin", "genres": [], "coverUrl", "durationMs", "provider" } ] }`
-- `PUT /api/books/{id}/metadata` with one of those results (or hand-typed fields) saves
-  it and fetches `coverUrl`. It answers with the updated book.
-  `DELETE /api/books/{id}/metadata` undoes it.
-- `GET/POST /api/users`, `PATCH/DELETE /api/users/{name}` for user management.
+### Reporting sessions (do this if the app keeps its own listening log)
 
-## 8. Protocol document
+```
+POST /api/sessions
+{ "sessions": [ { "id": "8c1f…", "bookId": "…", "startedAt": …, "endedAt": …,
+                  "startPositionMs": …, "endPositionMs": …, "listenedMs": … } ] }
+→ { "stored": 1 }
+```
 
-`docs/kithara-sync-protocol.md` (Android repo) and the site copy still describe
-version 1 as it was. Suggested edits, whoever owns that document:
+- `id` is the app's own: 1 to 64 characters from `A–Z a–z 0–9 - _`. Sending the same
+  id again from the same device **replaces** the stored session, so upload a session as
+  it grows (on each pause, say) without making duplicates.
+- `listenedMs` is wall-clock listening, so an hour at 2x is 30 minutes. It can't be more
+  than `endedAt − startedAt`. A session lasts at most a day and can't end in the future.
+  Send up to 500 at a time. If one is invalid, the whole batch is refused with `400`
+  and the session's id in the message.
+- From the first report on, **the server stops estimating sessions for that device**.
+  Its progress uploads still sync position, but they no longer add sessions. Report
+  every session from then on, including the backlog if you have it.
+
+### Reading them
+
+```
+GET /api/stats?tzOffset=60          (minutes EAST of UTC, i.e. -Date.getTimezoneOffset())
+{ "totalListenedMs", "daysListened", "currentStreakDays", "longestStreakDays",
+  "booksStarted", "booksFinished", "days": [ { "date", "listenedMs" } ], "books": [ … ] }
+
+GET /api/sessions?bookId=…&since=…
+{ "sessions": [ { "id", "bookId", "device", "startedAt", "endedAt", "startPositionMs", "endPositionMs", "listenedMs" } ] }
+```
+
+- On a server library, show the **server's figures**, which cover every device. Until
+  the app reports its own sessions, label them as an estimate.
+- Progress records carry `startedAt` and `finishedAt`, which the server maintains.
+  `finishedAt` gives "Finished on …".
+- Compute `tzOffset` on every request, since it changes with daylight saving.
+
+## 7. Collections and playlists
+
+Named, ordered lists of books. **Collections** are shared: admins make them and
+everyone sees them. **Playlists** belong to one user, and nobody else sees them.
+
+```
+GET    /api/collections            { "collections": [ { "id", "name", "description", "bookIds": [ … ], "updatedAt" } ] }
+GET    /api/playlists              { "playlists":   [ … ] }
+POST   /api/{collections|playlists}         { "name", "description", "bookIds" }  → 201 with the list
+PATCH  /api/{collections|playlists}/{id}    any of those fields                   → the list
+DELETE /api/{collections|playlists}/{id}    → 204
+```
+
+- Each person sees only the books in a collection that they're allowed to see. A
+  collection with none of those isn't shown to them at all.
+- Only admins may change collections; anyone else gets `403`. Anyone may change their
+  own playlists.
+- Every book in `bookIds` must exist and be visible to the caller, or the request gets
+  `400`. A book given twice is kept once. Names are up to 100 characters. A list holds
+  up to 2,000 books, and a user up to 200 lists.
+- `PATCH` with `bookIds` replaces the whole order. To add a book, send the list with
+  the book appended.
+- Suggested UI: a "Collections" shelf on the library screen, and "Add to playlist" on
+  the book screen. A playlist can also serve as an up-next queue: play the next book
+  when one finishes.
+
+## 8. Sign-in through an identity provider (single sign-on)
+
+When the admin has set it up, people can sign in through Authelia, Authentik,
+Keycloak, Google and the like, instead of typing a password into the app.
+
+```
+GET /api/oidc         (no auth)   { "enabled": true, "buttonText": "Sign in with Authelia" }
+```
+
+When `enabled` is true, show the button. The flow is OAuth for native apps, with PKCE
+between the app and **this server**. The server does its own PKCE with the provider.
+
+1. Make a random `verifier` (43 to 128 characters) and its
+   `challenge = base64url(sha256(verifier))`, with no padding (43 characters).
+2. Open the system browser (`ASWebAuthenticationSession` on iOS, a Custom Tab on
+   Android) at
+   `{server}/api/oidc/start?challenge=…&redirect=kithara://oidc&device=Pixel%209`.
+   `redirect` must use the `kithara:` scheme.
+3. The person signs in at the provider. The browser comes back to
+   `kithara://oidc?code=…`, or `kithara://oidc?error=…` with a message to show.
+4. `POST /api/oidc/exchange` (no auth) with `{ "code", "verifier", "device" }` returns
+   `{ "token", "user", "role" }`, the same as `POST /api/auth`. The code works once,
+   within 2 minutes, and only with the matching verifier. Otherwise the answer is `401`.
+
+Register the `kithara` URL scheme on both platforms. Accounts are matched by the
+provider's subject after the first sign-in. If the provider doesn't know someone,
+they get the error "there is no account here for you" unless the admin turned on
+automatic accounts.
+
+## 9. Admin features (optional in the apps)
+
+The server's web page does all of this, so the apps don't need it. If you want any of
+it anyway, show it only when `role == "admin"`:
+
+- `POST /api/rescan` → `{ "books": N }`
+- `GET /api/books/{id}/match?provider=audible|openlibrary|google…`, and
+  `PUT`/`DELETE /api/books/{id}/metadata`, for matching and editing details.
+- `PUT /api/books/{id}/cover` (image body) and `PUT /api/books/{id}/chapters`.
+- `GET/POST /api/users` and `PATCH/DELETE /api/users/{name}`.
+- Libraries, uploads, scan problems, settings, backup and activity: see the README.
+
+## 10. Protocol document
+
+`docs/kithara-sync-protocol.md` (in the Android repo) and the site copy still describe
+version 1 as it was. Suggested edits, for whoever owns that document:
 
 - §8 lists "Multiple libraries per server" and "Listening statistics" as left out of
-  version 1. Both now exist **as optional extensions**: one catalogue with a
-  `library` field, and server-estimated sessions. Mention them as a server MAY, with
-  the routes above.
-- Add the new optional book fields from §2 above to §4 of that document.
-- The conformance tables (§10/§11) gain rows for: `device` sent, `speed` sent, `429`
-  on auth, libraries filter, devices screen, stats, download link.
+  version 1. Both now exist as optional extensions. Describe them as things a server
+  MAY offer, advertised in `features`.
+- Add the optional book fields from §2 to §4 of that document.
+- Mention `features` on `/api/health` as the way to detect extensions.
+- The conformance tables (§10/§11) gain rows for:
+  - `device` sent
+  - `speed` sent
+  - `429`/`503` on sign-in
+  - `403` handled
+  - the library filter
+  - the devices screen
+  - password change
+  - stats
+  - reported sessions
+  - signed links
+  - collections and playlists
+  - single sign-on
 
-A **version 2** candidate, for when it's worth it: clients upload their own listening
-sessions (`POST /api/sessions`, idempotent on a client-generated id). The server would
-then stop estimating for those clients, and the stats become exact. Nothing in 0.2.0
-depends on this.
+---
 
-## Suggested order
+## To do in the apps
 
-1. §1, all four items. Small, and they make everything else accurate.
-2. §2 (new fields) and §3 (library filter).
-3. §4 (devices screen) and §6 (download).
-4. §5 (stats).
-5. §7 only if admins want it in the app rather than on the web page.
+### Both apps, in this order
+
+1. The §1 fixes. They're small, and they make everything after them accurate.
+2. The new book fields (§2) and the library filter (§3).
+3. The devices screen and password change (§4).
+4. Reporting sessions (§6). Then show the server's stats as exact rather than
+   estimated.
+5. Collections and playlists (§7).
+6. Single sign-on (§8).
+7. Downloads through the system downloader (§5), if wanted.
+
+### Android (`Kithara-Android`)
+
+- `net/KitharaServerApi.kt`
+  - `authenticate()`: add `device` to `AuthRequest` (`Build.MODEL`, or the
+    user-visible device name from `Settings.Global.DEVICE_NAME`).
+  - `putProgress()`: send `speed` in `ServerProgress` when it isn't 1.0. The field
+    already exists but isn't sent.
+  - `failure()`: map `403` to "not allowed" instead of the generic message. `429` and
+    `503` are already handled.
+  - `ServerBook`: add `description`, `subtitle`, `genres`, `library`, `publisher`,
+    `publishedYear`, `language`, `isbn`, `asin`. `ServerFile`: add `mimeType`. Keep
+    them optional with defaults so older servers still parse.
+  - New calls: `me`, `devices`, `revokeDevice`, `changePassword` (store the returned
+    token), `stats`, `sessions`, `reportSessions`, `collections`, `playlists` (with
+    create, update and delete), `oidcInfo`, `oidcExchange`, `downloadLink`. Read
+    `features` from `health`.
+- `source/CustomSyncSource.kt`: carry the new fields into the local book, and the
+  library name for the filter. After each listening session ends locally, queue it for
+  `POST /api/sessions` with a stable id (a UUID saved with the session).
+- UI:
+  - the server settings screen gets devices, change password, and the identity
+    provider button on sign-in (a Custom Tab, plus an intent filter for `kithara://oidc`)
+  - the library gets a library filter and a Collections shelf
+  - the book screen gets the new fields and "Add to playlist"
+
+### iOS (`Kithara-iOS`)
+
+- `KitharaCore/…/Protocol/KitharaServerClient.swift`: give `mapError` a distinct `403`
+  case ("not allowed") instead of the generic `.http(status, message)`. Add the same
+  new calls as Android.
+- `KitharaCore/…/Protocol/ProtocolModels.swift`: add `subtitle`, `genres`, `library`,
+  `publisher`, `publishedYear`, `language`, `isbn`, `asin` to `RemoteBook`, all
+  optional (`description` is already there). Add `mimeType` to the file model.
+- `Kithara/Sync/KitharaSyncSource.swift`: the `ProgressRecord` built for upload
+  (around line 207) doesn't pass `speed`. Pass the book's playback rate when it isn't
+  1.0. The model already has the field, and the wire-format test covers it. Queue
+  finished listening sessions for `POST /api/sessions`, as on Android.
+- UI: the same screens as Android. Sign-on uses `ASWebAuthenticationSession` with
+  `callbackURLScheme: "kithara"`, which needs no `Info.plist` URL type.

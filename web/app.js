@@ -69,6 +69,8 @@ const ICONS = {
   files: "M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z",
   remove: "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z",
   add: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z",
+  down: "M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z",
+  queue: "M3 10h11v2H3zm0-4h11v2H3zm0 8h7v2H3zm13-1v8l6-4z",
   up: "M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z",
   phone: "M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z",
   tablet: "M21 4H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h18c1.1 0 1.99-.9 1.99-2L23 6c0-1.1-.9-2-2-2zm-2 14H5V6h14v12z",
@@ -309,10 +311,55 @@ function renderSignIn(message = "") {
     err,
     submit,
     el("p", { class: "tiny muted" }, "Accounts are made by whoever runs this server."));
+  const sso = el("div");
   app.replaceChildren(el("div", { class: "signin" }, el("div", { class: "box" },
     el("div", { class: "box-head" }, el("img", { src: "logo.svg", alt: "" }),
       el("div", {}, el("div", { class: "strong", style: "font-size:16px" }, "Kithara"), el("div", { class: "small muted" }, state.server?.name || "Audiobook server"))),
     form)));
+  form.prepend(sso);
+  api("/api/oidc").then((o) => {
+    if (!o.enabled) return;
+    sso.append(
+      el("button", { class: "btn secondary wide-btn", type: "button", onclick: () => ssoStart(remember.checked).catch((e) => { err.textContent = e.message; }) }, icon("person"), o.buttonText),
+      el("div", { class: "or tiny muted" }, "or with a password"));
+  }).catch(() => { /* no button */ });
+}
+
+// Single sign-on: the server sends the browser to the identity provider and back here
+// with a one-time code in the fragment, which is traded for a token along with the
+// PKCE verifier kept for this tab.
+const SSO_KEY = "kithara.sso";
+const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+async function ssoStart(remember) {
+  if (!crypto.subtle) throw new Error("Single sign-on needs this page opened over https.");
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  sessionStorage.setItem(SSO_KEY, JSON.stringify({ verifier, remember }));
+  location.href = "/api/oidc/start?" + new URLSearchParams({ challenge, device: browserName() });
+}
+
+// ssoReturn finishes a sign-in the provider sent back, if this load is one. It returns
+// whether it was.
+async function ssoReturn() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (!h.has("code") && !h.has("error")) return false;
+  history.replaceState(null, "", location.pathname);
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(SSO_KEY)); sessionStorage.removeItem(SSO_KEY); } catch { /* none */ }
+  if (h.has("error") || !saved) {
+    renderSignIn(h.get("error") || "That sign-in was started in another tab. Try again.");
+    return true;
+  }
+  try {
+    const out = await api("/api/oidc/exchange", { method: "POST", body: { code: h.get("code"), verifier: saved.verifier, device: browserName() } });
+    resetCaches();
+    saveToken(out.token, saved.remember);
+    await start();
+  } catch (e) {
+    if (e.status !== 401 || !state.token) renderSignIn(e.status === 401 ? "That sign-in expired. Try again." : e.message);
+  }
+  return true;
 }
 
 function browserName() {
@@ -327,6 +374,7 @@ function browserName() {
 const VIEWS = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "library", label: "Library", icon: "library" },
+  { id: "lists", label: "Collections", icon: "queue" },
   { id: "stats", label: "Listening", icon: "stats" },
   { id: "devices", label: "Devices", icon: "devices" },
   { id: "account", label: "Account", icon: "person" },
@@ -389,7 +437,7 @@ async function render() {
   main.append(el("p", { class: "muted" }, "Loading…"));
   try {
     const view = {
-      dashboard: viewDashboard, library: viewLibrary, stats: viewStats, devices: viewDevices, account: viewAccount,
+      dashboard: viewDashboard, library: viewLibrary, lists: viewLists, stats: viewStats, devices: viewDevices, account: viewAccount,
       libraries: viewLibraries, maintenance: viewMaintenance, activity: viewActivity, users: viewUsers, settings: viewSettings,
     }[current.id];
     main.replaceChildren(...[await view(tools)].flat().filter(Boolean));
@@ -787,7 +835,8 @@ function bookDetail(b) {
   const actions = el("div", { class: "row", style: "margin-top:14px" }, play, download,
     p?.finished ? el("button", { class: "btn secondary", type: "button", onclick: () => setProgress(b, false) }, icon("replay"), "Start over") :
       el("button", { class: "btn secondary", type: "button", onclick: () => setProgress(b, true) }, icon("check"), "Mark finished"),
-    resumeAt ? el("button", { class: "btn ghost", type: "button", onclick: () => setProgress(b, false) }, "Start over") : null);
+    resumeAt ? el("button", { class: "btn ghost", type: "button", onclick: () => setProgress(b, false) }, "Start over") : null,
+    el("button", { class: "btn ghost", type: "button", onclick: () => addToList(b) }, icon("queue"), "Add to a list"));
   if (isAdmin()) {
     actions.append(el("div", { class: "row", style: "flex-basis:100%;margin-top:2px" },
       el("button", { class: "btn secondary small", type: "button", onclick: () => openBook(b.id, "match") }, icon("magic"), "Find details"),
@@ -1847,10 +1896,51 @@ async function viewSettings() {
 
   return el("div", { class: "widgets" },
     widget("General", { wide: true, body: form }),
+    widget("Single sign-on", { wide: true, body: await oidcForm() }),
     widget("Backup", { body: [
-      el("p", { class: "small" }, "Everything that can't be rebuilt from the audiobook folders: accounts, everyone's progress, bookmarks and listening history, added libraries, saved details and covers, and these settings."),
+      el("p", { class: "small" }, "Everything that can't be rebuilt from the audiobook folders: accounts, everyone's progress, bookmarks, playlists and listening history, collections, added libraries, saved details and covers, and these settings."),
       el("p", { class: "tiny muted", style: "margin:8px 0 12px" }, "It holds password hashes: keep it somewhere safe. To restore, unzip it into the data folder of a stopped server. Devices sign in again afterwards."),
       dl] }));
+}
+
+// oidcForm sets up sign-in through an identity provider (Authelia, Authentik, Keycloak
+// and the like).
+async function oidcForm() {
+  const st = await api("/api/settings/oidc");
+  const c = st.config;
+  const input = (value, attrs = {}) => el("input", { type: "text", value: value || "", ...attrs });
+  const issuer = input(c.issuer, { placeholder: "https://auth.example.com" });
+  const clientId = input(c.clientId);
+  const secret = el("input", { type: "password", autocomplete: "new-password", placeholder: st.hasSecret ? "Saved. Leave empty to keep it" : "" });
+  const publicUrl = input(c.publicUrl, { placeholder: location.origin });
+  const claim = input(c.usernameClaim, { placeholder: "preferred_username" });
+  const button = input(c.buttonText, { placeholder: "Sign in with single sign-on", maxlength: 40 });
+  const auto = el("input", { type: "checkbox", checked: c.autoCreate ? true : null });
+  const callback = el("code", { class: "mono small" });
+  const showCallback = () => { callback.textContent = (publicUrl.value.trim() || location.origin).replace(/\/+$/, "") + "/api/oidc/callback"; };
+  publicUrl.addEventListener("input", showCallback);
+  showCallback();
+  const save = async (body) => {
+    try { await api("/api/settings/oidc", { method: "PUT", body }); toast(body.issuer ? "Single sign-on saved" : "Single sign-on turned off"); render(); }
+    catch (e) { toast(e.message); }
+  };
+  return el("form", { class: "form", onsubmit: (ev) => {
+    ev.preventDefault();
+    save({ issuer: issuer.value, clientId: clientId.value, clientSecret: secret.value, publicUrl: publicUrl.value || location.origin,
+      usernameClaim: claim.value, buttonText: button.value, autoCreate: auto.checked });
+  } },
+  el("p", { class: "wide small" }, "Let people sign in with an identity provider as well as a password. Register Kithara with the provider as a web app using this redirect address: ", callback),
+  el("label", { class: "field" }, el("span", {}, "Issuer"), issuer),
+  el("label", { class: "field" }, el("span", {}, "This server's public address"), publicUrl),
+  el("label", { class: "field" }, el("span", {}, "Client ID"), clientId),
+  el("label", { class: "field" }, el("span", {}, "Client secret"), secret),
+  el("label", { class: "field" }, el("span", {}, "Claim holding the user name"), claim),
+  el("label", { class: "field" }, el("span", {}, "Button text"), button),
+  el("label", { class: "check wide small" }, auto, "Make an account for someone the provider knows but this server doesn't (as a listener who sees every library)"),
+  el("p", { class: "wide tiny muted" }, "People are matched to accounts by user name the first time, then by the provider's own id for them. Use a claim the provider controls, not one people can set themselves."),
+  el("div", { class: "wide row end" },
+    c.issuer ? el("button", { class: "btn ghost", type: "button", onclick: () => save({ issuer: "" }) }, "Turn off") : null,
+    el("button", { class: "btn", type: "submit" }, "Save")));
 }
 
 // ------------------------------------------------------------------ activity (admin)
@@ -1881,8 +1971,123 @@ async function viewActivity(tools, days = 30) {
           el("td", { class: "c-num" }, fmtDuration(r.listenedMs)),
           el("td", { class: "hide-sm mono small muted" }, `${fmtClock(r.startPositionMs)} – ${fmtClock(r.endPositionMs)}`))))) :
         el("p", { class: "muted", style: "padding:14px" }, "No listening in this period.")),
-    el("p", { class: "tiny muted", style: "margin-top:10px" }, "Worked out from the apps' progress syncs, so it is an estimate and leans low."),
+    el("p", { class: "tiny muted", style: "margin-top:10px" }, "Apps that keep their own listening log send it; for the others it is worked out from progress syncs, so it is an estimate and leans low."),
   ];
+}
+
+// ------------------------------------------------------------------ collections and playlists
+
+// Collections are shared (admins make them, everyone sees the books in them they may
+// see); playlists are each person's own.
+const LIST_NOUN = { collections: "collection", playlists: "playlist" };
+
+async function loadLists() {
+  const [c, p] = await Promise.all([api("/api/collections"), api("/api/playlists")]);
+  return { collections: c.collections, playlists: p.playlists };
+}
+
+async function viewLists(tools) {
+  const [lists] = await Promise.all([loadLists(), loadLibrary()]);
+  tools.append(el("button", { class: "btn secondary small", type: "button", onclick: () => listSheet("playlists") }, icon("add"), "New playlist"));
+  if (isAdmin()) tools.append(el("button", { class: "btn secondary small", type: "button", onclick: () => listSheet("collections") }, icon("add"), "New collection"));
+  const section = (kind, title, note, editable) => [
+    el("h2", { class: "section-title" }, title),
+    lists[kind].length ? el("div", { class: "widgets" }, lists[kind].map((l) => listWidget(kind, l, editable))) : emptyNote(note),
+  ];
+  return [
+    ...section("collections", "Collections", isAdmin() ? "No collections yet. Make one to group books for everyone, like a series in reading order." : "No collections yet.", isAdmin()),
+    ...section("playlists", "My playlists", "No playlists yet. Add books to one from a book's page, or make one here. Only you see them.", true),
+  ];
+}
+
+function listWidget(kind, l, editable) {
+  const books = l.bookIds.map((id) => state.books.find((b) => b.id === id)).filter(Boolean);
+  const total = books.reduce((n, b) => n + (b.durationMs || 0), 0);
+  return widget(l.name, {
+    wide: true,
+    actions: editable ? [iconBtn("edit", "Edit " + LIST_NOUN[kind], () => listSheet(kind, l))] : [],
+    body: [
+      l.description ? el("p", { class: "small muted", style: "margin-bottom:10px" }, l.description) : null,
+      books.length ? el("div", { class: "cover-grid" }, books.map(bookTile)) : emptyNote("Nothing in it yet."),
+      el("p", { class: "tiny muted", style: "margin-top:8px" }, `${plural(books.length, "book")} · ${fmtDuration(total)}`),
+    ],
+  });
+}
+
+// hiddenIf keeps a button's place in its row while hiding it, so columns line up.
+const hiddenIf = (hide, btn) => { if (hide) btn.style.visibility = "hidden"; return btn; };
+
+// listSheet makes a list, or edits one: its name, description, and the order of books.
+function listSheet(kind, l = null) {
+  const noun = LIST_NOUN[kind];
+  const name = el("input", { type: "text", value: l?.name || "", maxlength: 100, required: true, autofocus: true });
+  const desc = el("textarea", { rows: 2, maxlength: 2000 });
+  desc.value = l?.description || "";
+  const ids = [...(l?.bookIds || [])];
+  const rows = el("div", { class: "lines" });
+  const draw = () => rows.replaceChildren(...ids.map((id, i) => {
+    const b = state.books.find((x) => x.id === id);
+    const move = (d) => { [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; draw(); };
+    return el("div", {},
+      span("n", i + 1), span("t clip", b?.title || "A removed book"),
+      el("span", { class: "end row", style: "flex-wrap:nowrap;gap:2px" },
+        hiddenIf(i === 0, iconBtn("up", "Move up", () => move(-1))),
+        hiddenIf(i === ids.length - 1, iconBtn("down", "Move down", () => move(1))),
+        iconBtn("remove", "Take out", () => { ids.splice(i, 1); draw(); })));
+  }));
+  draw();
+  const done = () => { dialog.close(); if (state.view === "lists") render(); };
+  const form = el("form", { class: "form", onsubmit: async (ev) => {
+    ev.preventDefault();
+    const body = { name: name.value, description: desc.value, bookIds: ids };
+    try {
+      await api(l ? `/api/${kind}/${encodeURIComponent(l.id)}` : `/api/${kind}`, { method: l ? "PATCH" : "POST", body });
+      toast(l ? "Saved" : `Made the ${noun}`);
+      done();
+    } catch (e) { toast(e.message); }
+  } },
+  el("label", { class: "field wide" }, el("span", {}, "Name"), name),
+  el("label", { class: "field wide" }, el("span", {}, "Description"), desc),
+  l ? el("div", { class: "wide" }, ids.length ? rows : emptyNote("Add books from their pages: “Add to a list”.")) : null,
+  el("div", { class: "wide row end" },
+    l ? el("button", { class: "btn ghost", type: "button", onclick: async () => {
+      if (!confirm(`Delete the ${noun} “${l.name}”? The books stay in the library.`)) return;
+      try { await api(`/api/${kind}/${encodeURIComponent(l.id)}`, { method: "DELETE" }); toast("Deleted"); done(); } catch (e) { toast(e.message); }
+    } }, icon("remove"), "Delete") : null,
+    el("button", { class: "btn", type: "submit" }, l ? "Save" : "Make " + noun)));
+  openSheet(l ? `Edit ${noun} · ${l.name}` : `New ${noun}`, [form]);
+}
+
+// addToList puts a book in (or takes it out of) the user's playlists, and an admin's
+// collections.
+async function addToList(b) {
+  let lists;
+  try { lists = await loadLists(); } catch (e) { return toast(e.message); }
+  const row = (kind, l) => {
+    const box = el("input", { type: "checkbox", checked: l.bookIds.includes(b.id) ? true : null, onchange: async () => {
+      box.disabled = true;
+      const bookIds = box.checked ? [...l.bookIds, b.id] : l.bookIds.filter((x) => x !== b.id);
+      try { Object.assign(l, await api(`/api/${kind}/${encodeURIComponent(l.id)}`, { method: "PATCH", body: { bookIds } })); }
+      catch (e) { toast(e.message); box.checked = !box.checked; }
+      box.disabled = false;
+    } });
+    return el("label", { class: "check" }, box, l.name);
+  };
+  const group = (kind, title) => [
+    el("h3", { class: "section-title" }, title),
+    lists[kind].length ? el("div", { class: "stack" }, lists[kind].map((l) => row(kind, l))) : emptyNote(`No ${kind} yet.`),
+  ];
+  const fresh = el("input", { type: "text", placeholder: "New playlist", maxlength: 100, "aria-label": "New playlist name" });
+  const make = el("form", { class: "row", style: "margin-top:10px", onsubmit: async (ev) => {
+    ev.preventDefault();
+    if (!fresh.value.trim()) return;
+    try { await api("/api/playlists", { method: "POST", body: { name: fresh.value, bookIds: [b.id] } }); addToList(b); }
+    catch (e) { toast(e.message); }
+  } }, el("div", { class: "grow" }, fresh), el("button", { class: "btn secondary", type: "submit" }, icon("add"), "Make"));
+  openSheet("Add to a list · " + b.title, [
+    ...group("playlists", "My playlists"), make,
+    isAdmin() ? group("collections", "Collections (everyone sees these)") : null,
+  ].flat(), { onBack: () => openBook(b.id) });
 }
 
 // ------------------------------------------------------------------ start
@@ -1900,6 +2105,7 @@ async function start() {
   applyTheme();
   try { state.server = await api("/api/health"); } catch { /* shown as "Kithara" */ }
   document.title = state.server?.name ? `${state.server.name} · Kithara` : "Kithara";
+  if (await ssoReturn()) return;
   state.token = loadToken();
   if (!state.token) return renderSignIn();
   try { await start(); } catch (e) { if (e.status !== 401) renderSignIn(e.message); }

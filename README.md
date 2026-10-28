@@ -145,6 +145,22 @@ Users from a version before roles existed all become admins on upgrade, because 
 then everyone could do everything. Demote any who shouldn't be. The last admin can't
 be demoted or removed.
 
+### Single sign-on
+
+People can also sign in through an identity provider that speaks OpenID Connect
+(Authelia, Authentik, Keycloak, Google and others). Register Kithara with the provider
+as a web app (confidential, or public with PKCE), with the redirect address
+`https://your.server/api/oidc/callback`, then fill in **Settings → Single sign-on** on
+the web page: the issuer, the client id and secret, and the address browsers reach this
+server at.
+
+The first time someone signs in, they're matched to the account whose user name equals
+the provider's `preferred_username` claim (or another claim you choose). From then on,
+they're matched by the provider's own id for them, even if their name changes there.
+Someone the provider knows but this server doesn't is turned away. If you tick
+"make an account", they get a new plain account instead. Pick a claim the provider
+controls, not one people can edit themselves.
+
 ## Metadata matching
 
 An admin can look a book up with **Audible**, **Open Library** or **Google Books** and
@@ -171,7 +187,10 @@ users.json            user names, roles, libraries and password hashes (PBKDF2-S
 tokens.json           device tokens, one per sign-in, with when each was last seen
 users/<name>/progress.json
 users/<name>/bookmarks.json
-users/<name>/sessions.json  listening sessions, worked out from progress
+users/<name>/sessions.json  listening sessions, sent by the apps or worked out from progress
+users/<name>/playlists.json
+collections.json      collections, shared by everyone
+oidc.json             the identity provider set-up, client secret included
 probe-cache.json      ffprobe results, by file
 covers/               artwork extracted from files, and covers chosen by matching
 metadata/<bookId>.json  metadata an admin matched or edited (audiobookshelf's format)
@@ -180,7 +199,8 @@ libraries.json        libraries added from the web page or `kithara-server libra
 settings.json         server name and rescan interval set from the web page
 ```
 
-Back up `users.json`, the `users/` folder and `metadata/` (plus `covers/*-match.*`).
+Back up `users.json`, the `users/` folder, `collections.json`, `oidc.json` and
+`metadata/` (plus `covers/*-match.*`), or use the backup button on the web page.
 Everything else is rebuilt from the library.
 Removing a user (`user remove NAME`) signs their devices out and moves their
 listening state aside rather than deleting it.
@@ -257,11 +277,27 @@ Everything the app talks is in the protocol document. Server specifics:
 - `DELETE /api/progress/{bookId}` forgets a position (not used by the app; handy for
   scripts).
 - Progress records also carry `startedAt` and `finishedAt`, kept by the server.
+- `GET /api/health` lists optional `features`: `collections`, `playlists`,
+  `reportedSessions` and `oidc`.
 - `GET /api/sessions` (optionally `?bookId=` and `?since=` ms) lists listening sessions.
-  The apps upload progress when playback pauses, so the stretch between two uploads is
-  counted as listening, and joined to the session before it if playback resumed within
-  ten minutes. Jumps that playback could not have covered in the time (seeks, a book
-  marked finished) count for nothing, so the figures lean low.
+  An app can send its own with `POST /api/sessions`, as `{"sessions": [...]}` (each with
+  the app's own `id`; sending an id again replaces it). The server then stops estimating
+  for that device. For other devices it estimates. The apps upload progress when
+  playback pauses, so the stretch between two uploads is counted as listening, and
+  joined to the session before it if playback resumed within ten minutes. Jumps that
+  playback could not have covered in the time (seeks, a book marked finished) count for
+  nothing, so those figures lean low.
+- **Collections and playlists:** `GET`/`POST /api/collections` and
+  `PATCH`/`DELETE /api/collections/{id}`, with `name`, `description` and `bookIds`.
+  Collections are shared, and only admins change them. Each person sees only the books
+  in them they may see. `/api/playlists` works the same way for each user's own
+  playlists.
+- **Single sign-on:** `GET /api/oidc` says whether it is on. `GET /api/oidc/start` takes
+  `?challenge=` (PKCE S256, made by the caller), `?redirect=kithara://…` for an app, and
+  `?device=`. It goes through the provider and back, and ends at the page or app with a
+  one-time `code`. `POST /api/oidc/exchange` with `code` and `verifier` returns a
+  token, the same as `/api/auth`. Admins set it up with `GET`/`PUT /api/settings/oidc`;
+  the secret is never sent back.
 - `GET /api/stats?tzOffset=MINUTES` (minutes east of UTC; days begin at local midnight)
   sums those sessions: total time, time per day, per book, days listened, current and
   longest streak, books started and finished.
@@ -274,7 +310,8 @@ Everything the app talks is in the protocol document. Server specifics:
   in a folder on the server, for picking one.
 - Failed sign-ins are limited to 10 per address and 30 per user name in 15 minutes;
   past that, `POST /api/auth` answers `429` with `Retry-After`. Devices already signed in
-  are unaffected. Behind a reverse proxy, pass `--trust-proxy` (or
+  are unaffected, and so are addresses that have signed in to that account before: the
+  per-account limit doesn't apply to them, so a stranger can't lock the owner out. Behind a reverse proxy, pass `--trust-proxy` (or
   `KITHARA_TRUST_PROXY=1`) so the limit applies per client, not to the proxy; leave it off
   otherwise, or clients could choose their own address.
 - `POST /api/auth` also returns the user's `role`. `GET /api/me` returns the signed-in
@@ -292,10 +329,11 @@ Everything the app talks is in the protocol document. Server specifics:
   files under their paths in the book folder (so disc folders stay apart), plus its cover.
   `POST /api/books/{bookId}/download-link` returns a `url` for the same zip that needs no
   Authorization header for 10 minutes, for browsers and system download managers. Links
-  are signed with a key held only in memory, so a restart voids them.
+  are signed with a key held only in memory, so a restart voids them. So do a password
+  change and signing out the device that asked for the link.
 - **Streaming:** `POST /api/books/{bookId}/stream-link` returns signed `files[].url`s
   that play without an Authorization header for 12 hours (for an `<audio>` element).
-  `/audio/...` and `/api/books/{id}/download` accept the same `?u=&exp=&sig=` links.
+  `/audio/...` and `/api/books/{id}/download` accept the same `?u=&d=&exp=&sig=` links.
 - `PUT /api/me/password` with `current` and `new` changes your own password; every other
   device is signed out, and the response carries a fresh `token` for this one.
 - **Admin:** `PUT /api/libraries/{name}/files?path=Author/Title/file.mp3` (raw body)

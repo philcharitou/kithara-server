@@ -38,9 +38,10 @@ func (s *server) webHandler() http.Handler {
 
 // Signed links let something that cannot send a bearer header (an <audio> element, a
 // browser's own download, a phone's download manager) fetch one book's audio or zip
-// for a while. Each is for one user, one book and one purpose; it is signed with a key
-// that lives only in memory (a restart voids them all) and with the user's password
-// salt (a password change voids theirs). See signedOr in features.go.
+// for a while. Each is for one user, one book and one purpose, and names the device
+// that asked for it (signing that device out voids it); it is signed with a key that
+// lives only in memory (a restart voids them all) and with the user's password salt
+// (a password change voids theirs). See signedOr in features.go.
 
 const downloadLinkTTL = 10 * time.Minute
 
@@ -50,16 +51,16 @@ func newLinkKey() []byte {
 	return k
 }
 
-func (s *server) linkSig(user, purpose, bookID string, exp int64) string {
+func (s *server) linkSig(user, device, purpose, bookID string, exp int64) string {
 	m := hmac.New(sha256.New, s.linkKey)
-	m.Write([]byte(user + "\x00" + s.store.linkSecret(user) + "\x00" + purpose + "\x00" + bookID + "\x00" + strconv.FormatInt(exp, 10)))
+	m.Write([]byte(user + "\x00" + s.store.linkSecret(user) + "\x00" + device + "\x00" + purpose + "\x00" + bookID + "\x00" + strconv.FormatInt(exp, 10)))
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-// signedQuery is the ?u=&exp=&sig= of a link good for ttl.
-func (s *server) signedQuery(user, purpose, bookID string, ttl time.Duration) (string, int64) {
-	exp := time.Now().Add(ttl).Unix()
-	q := url.Values{"u": {user}, "exp": {strconv.FormatInt(exp, 10)}, "sig": {s.linkSig(user, purpose, bookID, exp)}}
+// signedQuery is the ?u=&d=&exp=&sig= of a link good for ttl, for the device token.
+func (s *server) signedQuery(user, token, purpose, bookID string, ttl time.Duration) (string, int64) {
+	exp, d := time.Now().Add(ttl).Unix(), deviceID(token)
+	q := url.Values{"u": {user}, "d": {d}, "exp": {strconv.FormatInt(exp, 10)}, "sig": {s.linkSig(user, d, purpose, bookID, exp)}}
 	return q.Encode(), exp
 }
 
@@ -69,7 +70,7 @@ func (s *server) downloadLink(w http.ResponseWriter, r *http.Request, user, toke
 	if b == nil {
 		return
 	}
-	q, exp := s.signedQuery(user, "zip", b.ID, downloadLinkTTL)
+	q, exp := s.signedQuery(user, token, "zip", b.ID, downloadLinkTTL)
 	writeJSONResponse(w, 200, map[string]any{
 		"url":       "/api/books/" + url.PathEscape(b.ID) + "/download?" + q,
 		"expiresAt": exp * 1000,

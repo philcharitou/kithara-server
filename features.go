@@ -35,12 +35,12 @@ func (s *server) signedOr(purpose string, h userHandler) http.HandlerFunc {
 			bearer(w, r)
 			return
 		}
-		user := q.Get("u")
+		user, device := q.Get("u"), q.Get("d")
 		exp, err := strconv.ParseInt(q.Get("exp"), 10, 64)
-		want := s.linkSig(user, purpose, r.PathValue("bookId"), exp)
-		// The user must still exist; the handler checks they may still see the book.
-		exists := s.store.exists(user)
-		if err != nil || !exists || time.Now().Unix() > exp || subtle.ConstantTimeCompare([]byte(want), []byte(q.Get("sig"))) != 1 {
+		want := s.linkSig(user, device, purpose, r.PathValue("bookId"), exp)
+		// The device that asked must still be signed in (so the user still exists); the
+		// handler checks they may still see the book.
+		if err != nil || !s.store.hasDevice(user, device) || time.Now().Unix() > exp || subtle.ConstantTimeCompare([]byte(want), []byte(q.Get("sig"))) != 1 {
 			writeError(w, http.StatusForbidden, "this link is not valid or has expired")
 			return
 		}
@@ -57,7 +57,7 @@ func (s *server) streamLink(w http.ResponseWriter, r *http.Request, user, token 
 	if b == nil {
 		return
 	}
-	q, exp := s.signedQuery(user, "audio", b.ID, streamLinkTTL)
+	q, exp := s.signedQuery(user, token, "audio", b.ID, streamLinkTTL)
 	files := make([]map[string]any, 0, len(b.Files))
 	for _, f := range b.Files {
 		files = append(files, map[string]any{"index": f.Index, "url": f.URL + "?" + q, "durationMs": f.DurationMs})
@@ -414,8 +414,9 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, user, token
 // ------------------------------------------------------------------ backup (admin)
 
 // backup sends what cannot be rebuilt from the library, as a zip: users and their
-// password hashes, everyone's progress, bookmarks and listening sessions, the
-// libraries added at run time, book ids, saved metadata and covers, and settings.
+// password hashes, everyone's progress, bookmarks, playlists and listening sessions,
+// collections, the libraries added at run time, book ids, saved metadata and covers,
+// settings and the identity provider set-up.
 // Device tokens are left out (restoring signs everyone in again), as are caches.
 func (s *server) backup(w http.ResponseWriter, r *http.Request, user, token string) {
 	dir := s.lib.dataDir
@@ -432,6 +433,7 @@ func (s *server) backup(w http.ResponseWriter, r *http.Request, user, token stri
 			return nil
 		}
 		keep := rel == "users.json" || rel == "libraries.json" || rel == "settings.json" || rel == "ids.json" ||
+			rel == "collections.json" || rel == "oidc.json" ||
 			strings.HasPrefix(rel, "ids-") || strings.HasPrefix(rel, "users/") || strings.HasPrefix(rel, "metadata/") ||
 			strings.HasPrefix(rel, "covers/") && strings.Contains(path.Base(rel), "-match.")
 		if !keep || strings.HasSuffix(rel, ".tmp") {

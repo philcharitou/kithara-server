@@ -33,16 +33,24 @@ type server struct {
 	linkKey  []byte // signs download and audio links
 	started  time.Time
 	settings *settingsBox
+	lists    listStore
+	known    *knownClients // addresses that have signed in to an account before
+	oidc     *oidcBox
 }
 
 func newServer(st *store, lib *library, name string) *server {
 	s := &server{store: st, lib: lib, mux: http.NewServeMux(), authSlots: make(chan struct{}, 4),
-		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher(), linkKey: newLinkKey(), started: time.Now()}
+		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher(), linkKey: newLinkKey(), started: time.Now(), known: newKnownClients()}
 	s.loadSettings(name, 0)
+	s.loadOIDC()
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.health)
 	m.HandleFunc("POST /api/auth", s.auth)
 	m.HandleFunc("POST /api/auth/logout", s.withUser(s.logout))
+	m.HandleFunc("GET /api/oidc", s.oidcInfo)
+	m.HandleFunc("GET /api/oidc/start", s.oidcStart)
+	m.HandleFunc("GET /api/oidc/callback", s.oidcCallback)
+	m.HandleFunc("POST /api/oidc/exchange", s.oidcExchange)
 	m.HandleFunc("GET /api/library", s.withUser(s.libraryHandler))
 	m.HandleFunc("GET /api/libraries", s.withUser(s.librariesHandler))
 	m.HandleFunc("POST /api/libraries", s.withAdmin(s.addLibraryHandler))
@@ -53,6 +61,9 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("PUT /api/progress/{bookId}", s.withUser(s.putProgress))
 	m.HandleFunc("DELETE /api/progress/{bookId}", s.withUser(s.deleteProgress))
 	m.HandleFunc("GET /api/sessions", s.withUser(s.sessionsHandler))
+	m.HandleFunc("POST /api/sessions", s.withUser(s.reportSessions))
+	s.listRoutes(m, "collections", true)
+	s.listRoutes(m, "playlists", false)
 	m.HandleFunc("GET /api/stats", s.withUser(s.statsHandler))
 	m.HandleFunc("GET /api/bookmarks", s.withUser(s.allBookmarks))
 	m.HandleFunc("POST /api/bookmarks/{bookId}", s.withUser(s.addBookmark))
@@ -86,6 +97,8 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("GET /api/problems", s.withAdmin(s.problems))
 	m.HandleFunc("GET /api/settings", s.withAdmin(s.getSettings))
 	m.HandleFunc("PUT /api/settings", s.withAdmin(s.putSettings))
+	m.HandleFunc("GET /api/settings/oidc", s.withAdmin(s.oidcSettings))
+	m.HandleFunc("PUT /api/settings/oidc", s.withAdmin(s.putOIDCSettings))
 	m.HandleFunc("GET /api/backup", s.withAdmin(s.backup))
 	m.HandleFunc("GET /api/activity", s.withAdmin(s.activity))
 	web := s.webHandler()
@@ -173,15 +186,21 @@ const maxAuthWaiting = 64
 // up while waiting, it answers the request itself and returns answered.
 func (s *server) passwordAttempt(w http.ResponseWriter, r *http.Request, user, password string) (ok, answered bool) {
 	now := time.Now()
-	ipKey, userKey := "ip:"+limitKey(clientIP(r, s.trustProxy)), "user:"+clip(strings.ToLower(user), 64)
+	addr := limitKey(clientIP(r, s.trustProxy))
+	ipKey, userKey := "ip:"+addr, "user:"+clip(strings.ToLower(user), 64)
 	if wait := s.ipLimit.try(ipKey, now); wait > 0 {
 		tooMany(w, wait, "too many failed attempts; try again later")
 		return false, true
 	}
-	if wait := s.userLimit.try(userKey, now); wait > 0 {
-		s.ipLimit.forget(ipKey, now)
-		tooMany(w, wait, "too many failed attempts; try again later")
-		return false, true
+	// From an address that has signed in to this account before, only the address's
+	// own limit applies, so failures from elsewhere cannot lock the owner out.
+	known := s.known.has(user, addr, now)
+	if !known {
+		if wait := s.userLimit.try(userKey, now); wait > 0 {
+			s.ipLimit.forget(ipKey, now)
+			tooMany(w, wait, "too many failed attempts; try again later")
+			return false, true
+		}
 	}
 	// A flood of checks waits its turn, but only so many at once: past that, refuse.
 	if s.authWaiting.Add(1) > maxAuthWaiting {
@@ -201,7 +220,10 @@ func (s *server) passwordAttempt(w http.ResponseWriter, r *http.Request, user, p
 	<-s.authSlots
 	if ok {
 		s.ipLimit.forget(ipKey, now)
-		s.userLimit.forget(userKey, now)
+		if !known {
+			s.userLimit.forget(userKey, now)
+		}
+		s.known.add(user, addr, now)
 	}
 	return ok, false
 }
@@ -278,7 +300,8 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, user, token stri
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSONResponse(w, 200, map[string]any{"ok": true, "protocol": protocolVersion, "name": s.serverName(), "version": serverVersion})
+	writeJSONResponse(w, 200, map[string]any{"ok": true, "protocol": protocolVersion, "name": s.serverName(), "version": serverVersion,
+		"features": []string{"collections", "playlists", "reportedSessions", "oidc"}})
 }
 
 func (s *server) auth(w http.ResponseWriter, r *http.Request) {
@@ -412,6 +435,38 @@ func (s *server) sessionsHandler(w http.ResponseWriter, r *http.Request, user, t
 		return
 	}
 	writeJSONResponse(w, 200, map[string]any{"sessions": list})
+}
+
+// reportSessions takes {"sessions": [...]} from a device that records its own.
+func (s *server) reportSessions(w http.ResponseWriter, r *http.Request, user, token string) {
+	var in struct {
+		Sessions []ListeningSession `json:"sessions"`
+	}
+	if err := readBody(r, &in); err != nil || len(in.Sessions) > maxReportBatch {
+		writeError(w, http.StatusBadRequest, "send {\"sessions\": [...]}, up to 500 at a time")
+		return
+	}
+	now := time.Now().UnixMilli()
+	a := s.acct(user)
+	for _, ls := range in.Sessions {
+		if msg := checkReported(ls, now); msg != "" {
+			writeError(w, http.StatusBadRequest, ls.ID+": "+msg)
+			return
+		}
+		if s.lib.bookFor(a, ls.BookID) == nil {
+			writeError(w, http.StatusBadRequest, ls.ID+": no such book")
+			return
+		}
+	}
+	if err := s.store.markReporting(token); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.store.addSessions(user, s.store.tokenInfo(token).Device, in.Sessions); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSONResponse(w, 200, map[string]int{"stored": len(in.Sessions)})
 }
 
 // stats: ?tzOffset=MINUTES east of UTC (60 for Paris in winter) decides where days

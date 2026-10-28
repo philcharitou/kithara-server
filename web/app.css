@@ -388,3 +388,10 @@ input.scrub::-moz-range-thumb { width: 8px; height: 18px; border-radius: 3px; ba
 .up-row { display: grid; grid-template-columns: 1fr auto 120px; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 4px; background: var(--card-head); }
 .up-row.ok .progress > i { background: var(--ok); }
 .up-row .err { grid-column: 1 / -1; }
+
+/* collections, playlists, single sign-on */
+.section-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--on-surface-variant); margin: 18px 0 10px; }
+.section-title:first-child { margin-top: 0; }
+.wide-btn { width: 100%; justify-content: center; }
+.or { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
+.or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }

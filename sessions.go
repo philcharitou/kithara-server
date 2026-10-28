@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"regexp"
 	"sort"
 	"time"
 )
@@ -94,6 +95,64 @@ func (s *store) recordListening(user, device string, prev, next Progress) error 
 		StartedAt: start, EndedAt: next.UpdatedAt,
 		StartPositionMs: prev.PositionMs, EndPositionMs: next.PositionMs, ListenedMs: ms,
 	})
+	if len(list) > maxSessions {
+		list = list[len(list)-maxSessions:]
+	}
+	return writeJSONCompact(s.sessionsPath(user), list)
+}
+
+// Sessions a client recorded itself (POST /api/sessions). A client that keeps its own
+// listening log sends it, and from then on the server stops estimating for that device.
+// Each session carries the client's own id; sending one again (say, as it grows over
+// the course of an evening) replaces what was stored under that id for that device.
+
+const (
+	maxReportBatch   = 500
+	maxReportedMs    = 24 * 60 * 60 * 1000
+	reportClockSlack = 10 * 60 * 1000
+)
+
+var clientSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// checkReported says what is wrong with a reported session, if anything.
+func checkReported(ls ListeningSession, now int64) string {
+	switch {
+	case !clientSessionID.MatchString(ls.ID):
+		return "an id is 1 to 64 letters, digits, - or _"
+	case ls.StartedAt <= 0 || ls.EndedAt < ls.StartedAt || ls.EndedAt-ls.StartedAt > maxReportedMs:
+		return "a session ends after it starts and lasts at most a day"
+	case ls.EndedAt > now+reportClockSlack:
+		return "a session ends in the future"
+	case ls.ListenedMs < 0 || ls.ListenedMs > ls.EndedAt-ls.StartedAt+5000:
+		return "listenedMs is more than the session lasted"
+	case ls.StartPositionMs < 0 || ls.EndPositionMs < 0:
+		return "positions are not negative"
+	}
+	return ""
+}
+
+// addSessions stores sessions a device reported. They have been checked.
+func (s *store) addSessions(user, device string, in []ListeningSession) error {
+	defer s.lockUser(user)()
+	var list []ListeningSession
+	if err := readJSON(s.sessionsPath(user), &list); err != nil {
+		return err
+	}
+	at := map[string]int{}
+	for i, ls := range list {
+		if ls.Device == device {
+			at[ls.ID] = i
+		}
+	}
+	for _, ls := range in {
+		ls.Device = device
+		if i, ok := at[ls.ID]; ok {
+			list[i] = ls
+			continue
+		}
+		at[ls.ID] = len(list)
+		list = append(list, ls)
+	}
 	if len(list) > maxSessions {
 		list = list[len(list)-maxSessions:]
 	}
