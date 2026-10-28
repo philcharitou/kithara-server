@@ -139,7 +139,20 @@ function applyTheme() {
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", state.prefs.theme === "light" ? "#f3edf7" : "#100f14");
 }
 
+// resetCaches forgets what was loaded for the signed-in user, so the next one (after a
+// sign-out, or signing in as someone else) never sees it.
+function resetCaches() {
+  state.books = [];
+  state.libraries = [];
+  state.progress = new Map();
+  state.loadedAt = 0;
+  bookmarkCache = null;
+  for (const url of coverCache.values()) URL.revokeObjectURL(url);
+  coverCache.clear();
+}
+
 function saveToken(token, remember) {
+  if (token !== state.token) resetCaches();
   state.token = token;
   try {
     sessionStorage.setItem(TOKEN_KEY, token);
@@ -151,6 +164,7 @@ function loadToken() {
 }
 function forgetToken() {
   state.token = null;
+  resetCaches();
   try { sessionStorage.removeItem(TOKEN_KEY); storage()?.removeItem(TOKEN_KEY); } catch { /* nothing kept */ }
 }
 
@@ -384,9 +398,11 @@ async function render() {
 
 // rescanNow asks the server to rescan; the catalogue is fetched again afterwards.
 async function rescanNow() {
-  const r = await api("/api/rescan", { method: "POST" });
-  state.loadedAt = 0;
-  return r;
+  try {
+    return await api("/api/rescan", { method: "POST" });
+  } finally {
+    state.loadedAt = 0; // even after an error: the scan may still have published
+  }
 }
 
 function rescanButton() {
@@ -474,7 +490,7 @@ function chip(label, on, onclick) {
 
 async function viewDashboard(tools) {
   const tz = -new Date().getTimezoneOffset();
-  const [status, stats] = await Promise.all([api("/api/status"), api("/api/stats?tzOffset=" + tz), loadLibrary()]);
+  const [status, stats, { devices }] = await Promise.all([api("/api/status"), api("/api/stats?tzOffset=" + tz), api("/api/devices"), loadLibrary()]);
   const out = [];
   const byId = new Map(state.books.map((b) => [b.id, b]));
   const totalMs = state.books.reduce((n, b) => n + b.durationMs, 0);
@@ -549,7 +565,6 @@ async function viewDashboard(tools) {
   }
 
   // Devices, and for admins, users
-  const { devices } = await api("/api/devices");
   out.push(widget("Devices", {
     actions: [iconBtn("open", "Open Devices", () => go("devices"), "icon-btn sm")],
     visual: [el("span", { class: "ico" }, icon("devices")), span("big", devices.length), span("tiny muted", "signed in")],
@@ -591,18 +606,19 @@ function donut(slices, center, caption) {
 
 // ------------------------------------------------------------------ library
 
-function matches(b, q) {
-  if (!q) return true;
+// matches reports whether a book has every word of the search (already lowercased).
+function matches(b, words) {
+  if (!words.length) return true;
   const hay = [b.title, b.subtitle, b.author, b.narrator, b.series, ...(b.genres || [])].join(" ").toLowerCase();
-  return q.toLowerCase().split(/\s+/).every((w) => hay.includes(w));
+  return words.every((w) => hay.includes(w));
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const byTitle = (a, b) => collator.compare(a.title, b.title);
 const SORTS = {
   title: ["Title", byTitle],
-  author: ["Author", (a, b) => (a.author || "~").localeCompare(b.author || "~") || byTitle(a, b)],
-  series: ["Series", (a, b) => (a.series || "~").localeCompare(b.series || "~") || (a.seriesIndex ?? 1e9) - (b.seriesIndex ?? 1e9) || byTitle(a, b)],
+  author: ["Author", (a, b) => collator.compare(a.author || "~", b.author || "~") || byTitle(a, b)],
+  series: ["Series", (a, b) => collator.compare(a.series || "~", b.series || "~") || (a.seriesIndex ?? 1e9) - (b.seriesIndex ?? 1e9) || byTitle(a, b)],
   recent: ["Recently played", (a, b) => (state.progress.get(b.id)?.updatedAt || 0) - (state.progress.get(a.id)?.updatedAt || 0) || byTitle(a, b)],
   length: ["Length", (a, b) => b.durationMs - a.durationMs],
   updated: ["Recently changed", (a, b) => b.updatedAt - a.updatedAt],
@@ -627,11 +643,12 @@ async function viewLibrary(tools) {
   const count = span("small muted");
   let limit = PAGE;
   const fill = () => {
-    coverObserver.disconnect(); // the old rows' covers are going
+    const words = state.query.toLowerCase().split(/\s+/).filter(Boolean);
+    shelf.querySelectorAll(".cover[data-src]").forEach((box) => coverObserver.unobserve(box)); // the old rows are going
     const shown = state.books
       .filter((b) => !prefs.library || b.library === prefs.library)
       .filter((b) => prefs.filter === "all" || statusOf(b) === prefs.filter)
-      .filter((b) => matches(b, state.query))
+      .filter((b) => matches(b, words))
       .sort((SORTS[prefs.sort] || SORTS.title)[1]);
     count.textContent = shown.length === state.books.length ? plural(shown.length, "book") : `${shown.length} of ${state.books.length} books`;
     if (!shown.length) {
@@ -1528,15 +1545,19 @@ function groupedShelf(books, by) {
       groups.get(k).push(b);
     }
   }
-  const names = [...groups.keys()].sort((a, c) => a.localeCompare(c, undefined, { sensitivity: "base" }));
+  const names = [...groups.keys()].sort(collator.compare);
   if (!names.length) return el("div", { class: "table-wrap" }, emptyNote(by === "series" ? "No series yet. Series come from tags, folder names (Author/Series/Book) or saved details." : "No authors."));
   return el("div", { class: "groups" }, names.map((name) => {
     const list = groups.get(name).sort(by === "series" ? (a, c) => (a.seriesIndex ?? 1e9) - (c.seriesIndex ?? 1e9) || byTitle(a, c) : byTitle);
     const total = list.reduce((n, b) => n + b.durationMs, 0);
     const done = list.filter((b) => statusOf(b) === "finished").length;
-    return el("section", { class: "group-sec" },
-      el("div", { class: "group-head" }, el("h2", {}, name), span("small muted", `${plural(list.length, "book")} · ${fmtDuration(total)}${done ? ` · ${done} finished` : ""}`)),
-      el("div", { class: "cover-grid" }, list.map(bookTile)));
+    const grid = el("div", { class: "cover-grid" });
+    const sec = el("details", { class: "group-sec", open: names.length <= 12 ? true : null,
+      ontoggle: () => { if (sec.open && !grid.childElementCount) grid.append(...list.map(bookTile)); } },
+      el("summary", { class: "group-head" }, el("h2", {}, name), span("small muted", `${plural(list.length, "book")} · ${fmtDuration(total)}${done ? ` · ${done} finished` : ""}`)),
+      grid);
+    if (sec.open) grid.append(...list.map(bookTile));
+    return sec;
   }));
 }
 

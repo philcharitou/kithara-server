@@ -370,7 +370,9 @@ input.scrub::-moz-range-thumb { width: 8px; height: 18px; border-radius: 3px; ba
 /* ------------------------------------------------------------------ series and authors */
 
 .groups { display: grid; gap: 18px; }
-.group-head { display: flex; align-items: baseline; gap: 12px; padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
+.group-head { display: flex; align-items: baseline; gap: 12px; padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--line); cursor: pointer; list-style: none; }
+.group-head::-webkit-details-marker { display: none; }
+.group-sec:not([open]) .group-head { margin-bottom: 0; }
 .group-head h2 { font-size: 15px; font-weight: 500; }
 .toolbar .segmented .chip { height: 32px; }
 

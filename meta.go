@@ -136,10 +136,15 @@ func folderMeta(name string, above []string) bookMeta {
 // sidecarMeta reads the metadata files kept in a book's folder, weakest first, and
 // returns them merged along with the newest modification time among them, so editing
 // one moves the book's updatedAt.
-func sidecarMeta(dir string) (bookMeta, int64) {
+func sidecarMeta(dir string, plain map[string]bool) (bookMeta, int64) {
 	var m bookMeta
 	var newest int64
+	// Only regular files the folder listing showed: no links (which could lead to the
+	// server's own files and show them as a description), no folders.
 	read := func(name string) []byte {
+		if !plain[name] {
+			return nil
+		}
 		p := filepath.Join(dir, name)
 		info, err := os.Stat(p)
 		if err != nil || info.IsDir() || info.Size() > 4<<20 {
@@ -158,7 +163,7 @@ func sidecarMeta(dir string) (bookMeta, int64) {
 	if data := read("reader.txt"); data != nil {
 		m.Narrator = strings.TrimSpace(string(data))
 	}
-	if opf := findOPF(dir); opf != "" {
+	if opf := findOPF(plain); opf != "" {
 		if data := read(opf); data != nil {
 			merge(&m, parseOPF(data))
 		}
@@ -185,15 +190,20 @@ func merge(dst *bookMeta, src bookMeta) {
 }
 
 // findOPF prefers metadata.opf, else the only .opf in the folder.
-func findOPF(dir string) string {
-	if _, err := os.Stat(filepath.Join(dir, "metadata.opf")); err == nil {
+func findOPF(plain map[string]bool) string {
+	if plain["metadata.opf"] {
 		return "metadata.opf"
 	}
-	matches, _ := filepath.Glob(filepath.Join(dir, "*.opf"))
-	if len(matches) == 1 {
-		return filepath.Base(matches[0])
+	found := ""
+	for name := range plain {
+		if strings.EqualFold(filepath.Ext(name), ".opf") {
+			if found != "" {
+				return ""
+			}
+			found = name
+		}
 	}
-	return ""
+	return found
 }
 
 // parseABSMetadata reads audiobookshelf's metadata.json.

@@ -18,7 +18,8 @@ import (
 // ------------------------------------------------------------------ me and my devices
 
 func (s *server) me(w http.ResponseWriter, r *http.Request, user, token string) {
-	writeJSONResponse(w, 200, s.acct(user))
+	a, _ := s.store.account(user)
+	writeJSONResponse(w, 200, a)
 }
 
 // deviceOwner is whose devices a request is about: the caller's own, or, for an admin,
@@ -134,7 +135,8 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request, user, token 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSONResponse(w, http.StatusCreated, s.acct(in.Username))
+	a, _ := s.store.account(in.Username)
+	writeJSONResponse(w, http.StatusCreated, a)
 }
 
 func (s *server) updateUser(w http.ResponseWriter, r *http.Request, user, token string) {
@@ -152,7 +154,8 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request, user, token 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSONResponse(w, 200, s.acct(name))
+	a, _ := s.store.account(name)
+	writeJSONResponse(w, 200, a)
 }
 
 func (s *server) deleteUser(w http.ResponseWriter, r *http.Request, user, token string) {

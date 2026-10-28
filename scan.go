@@ -183,8 +183,14 @@ func (l *library) newRoot(sp libSpec, first bool) *libRoot {
 	r.idsPath = filepath.Join(l.dataDir, "ids-"+slug(r.name)+".json")
 	if _, err := os.Stat(r.idsPath); err != nil && first {
 		_ = readJSON(filepath.Join(l.dataDir, "ids.json"), &r.ids)
+		r.idsDirty = len(r.ids) > 0 // written to ids-<name>.json on the first scan
 	} else {
 		_ = readJSON(r.idsPath, &r.ids)
+	}
+	for rel, id := range r.ids {
+		if !validID(id) {
+			delete(r.ids, rel)
+		}
 	}
 	return r
 }
@@ -247,7 +253,7 @@ func (l *library) catalogueFor(a Account, name string) (catalogueView, bool) {
 			names = append(names, r.name)
 		}
 	}
-	key := strings.Join(names, "|")
+	key := strings.Join(names, "\x00")
 	v, ok := l.combos[key]
 	cat, gen := l.cat, l.gen
 	l.mu.RUnlock()
@@ -321,6 +327,11 @@ func (l *library) book(id string) *Book {
 func (l *library) rescan() error {
 	l.scanMu.Lock()
 	defer l.scanMu.Unlock()
+	return l.rescanLocked()
+}
+
+// rescanLocked is rescan for a caller that holds scanMu.
+func (l *library) rescanLocked() error {
 	start := time.Now()
 	if err := l.syncStored(); err != nil {
 		log.Printf("libraries.json: %v", err)
@@ -402,14 +413,12 @@ func (l *library) publish() error {
 	}
 	cat.UpdatedAt = everything.info.UpdatedAt
 	views[""] = everything
+	byLib := map[string][]Book{}
+	for _, b := range cat.Books {
+		byLib[b.Library] = append(byLib[b.Library], b)
+	}
 	for _, r := range l.roots {
-		var mine []Book
-		for _, b := range cat.Books {
-			if b.Library == r.name {
-				mine = append(mine, b)
-			}
-		}
-		if views[r.name], err = buildView(r.name, mine); err != nil {
+		if views[r.name], err = buildView(r.name, byLib[r.name]); err != nil {
 			return err
 		}
 	}
@@ -446,9 +455,15 @@ func (l *library) rebuildBook(id string) error {
 	if old.loose {
 		fallback = strings.TrimSuffix(filepath.Base(files[0]), filepath.Ext(files[0]))
 	}
-	b, err := l.buildBook(old.root, old.dir, files, fallback, old.loose)
+	var plain map[string]bool
+	if !old.loose {
+		plain = plainFiles(old.dir)
+	}
+	b, err := l.buildBook(old.root, old.dir, files, fallback, old.loose, plain)
 	if err != nil {
-		return err
+		// Its files moved or went since the last scan: read everything again.
+		log.Printf("rebuild %s: %v; rescanning", id, err)
+		return l.rescanLocked()
 	}
 	r := old.root
 	l.mu.Lock()
@@ -456,10 +471,12 @@ func (l *library) rebuildBook(id string) error {
 	for i := range books {
 		if books[i].ID == id {
 			books[i] = b
+			break
 		}
 	}
 	r.books = books
 	l.mu.Unlock()
+	l.probe.save(false)
 	return l.publish()
 }
 
@@ -480,7 +497,7 @@ func buildView(name string, books []Book) (catalogueView, error) {
 	}
 	sum := sha256.Sum256(body)
 	var gz bytes.Buffer
-	zw, _ := gzip.NewWriterLevel(&gz, gzip.BestCompression)
+	zw := gzip.NewWriter(&gz)
 	zw.Write(body)
 	zw.Close()
 	return catalogueView{body: body, gz: gz.Bytes(), etag: `"` + hex.EncodeToString(sum[:8]) + `"`, info: info}, nil
@@ -503,7 +520,7 @@ func (l *library) scanRoot(r *libRoot) ([]Book, error) {
 	l.probeAll(append(paths, loose...))
 	var books []Book
 	for _, d := range dirs {
-		b, err := l.buildBook(r, d.path, d.files, d.name, false)
+		b, err := l.buildBook(r, d.path, d.files, d.name, false, d.plain)
 		if err != nil {
 			log.Printf("skip %s: %v", d.path, err)
 			r.problems = append(r.problems, Problem{Library: r.name, Path: d.path, Error: err.Error()})
@@ -512,7 +529,7 @@ func (l *library) scanRoot(r *libRoot) ([]Book, error) {
 		books = append(books, b)
 	}
 	for _, f := range loose {
-		b, err := l.buildBook(r, filepath.Dir(f), []string{f}, strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)), true)
+		b, err := l.buildBook(r, filepath.Dir(f), []string{f}, strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)), true, nil)
 		if err != nil {
 			log.Printf("skip %s: %v", f, err)
 			r.problems = append(r.problems, Problem{Library: r.name, Path: f, Error: err.Error()})
@@ -527,6 +544,7 @@ type bookDir struct {
 	path  string
 	name  string
 	files []string
+	plain map[string]bool // regular files in the folder (no links), for sidecars and covers
 }
 
 // findBooks decides what counts as a book: a folder with audio files directly in it,
@@ -543,14 +561,18 @@ func findBooks(root string) ([]bookDir, []string, error) {
 		}
 		var audio []string
 		var subs []os.DirEntry
+		plain := map[string]bool{}
 		for _, e := range entries {
 			name := e.Name()
 			if strings.HasPrefix(name, ".") || name == "@eaDir" {
 				continue
 			}
+			if e.Type().IsRegular() {
+				plain[name] = true
+			}
 			if e.IsDir() {
 				subs = append(subs, e)
-			} else if _, ok := audioExt[strings.ToLower(filepath.Ext(name))]; ok {
+			} else if isAudio(root, dir, e) {
 				audio = append(audio, filepath.Join(dir, name))
 			}
 		}
@@ -573,17 +595,15 @@ func findBooks(root string) ([]bookDir, []string, error) {
 					sub, _ := os.ReadDir(filepath.Join(dir, n))
 					var part []string
 					for _, e := range sub {
-						if !e.IsDir() {
-							if _, ok := audioExt[strings.ToLower(filepath.Ext(e.Name()))]; ok {
-								part = append(part, filepath.Join(dir, n, e.Name()))
-							}
+						if isAudio(root, filepath.Join(dir, n), e) {
+							part = append(part, filepath.Join(dir, n, e.Name()))
 						}
 					}
 					sort.Slice(part, naturalLess(part))
 					audio = append(audio, part...)
 				}
 				if len(audio) > 0 {
-					dirs = append(dirs, bookDir{path: dir, name: filepath.Base(dir), files: audio})
+					dirs = append(dirs, bookDir{path: dir, name: filepath.Base(dir), files: audio, plain: plain})
 					return true, nil
 				}
 			}
@@ -603,7 +623,7 @@ func findBooks(root string) ([]bookDir, []string, error) {
 				// Audio sitting next to book folders: each file is its own book.
 				loose = append(loose, audio...)
 			} else {
-				dirs = append(dirs, bookDir{path: dir, name: filepath.Base(dir), files: audio})
+				dirs = append(dirs, bookDir{path: dir, name: filepath.Base(dir), files: audio, plain: plain})
 			}
 			return true, nil
 		}
@@ -611,6 +631,40 @@ func findBooks(root string) ([]bookDir, []string, error) {
 	}
 	_, err := walk(root, 0)
 	return dirs, loose, err
+}
+
+// isAudio reports whether a folder entry is an audio file to serve. A link counts
+// only when it leads to a file inside the library: one that leads elsewhere (another
+// library, the server's own files) would hand that file to anyone who can see this one.
+func isAudio(root, dir string, e os.DirEntry) bool {
+	if _, ok := audioExt[strings.ToLower(filepath.Ext(e.Name()))]; !ok {
+		return false
+	}
+	if e.Type().IsRegular() {
+		return true
+	}
+	if e.Type()&os.ModeSymlink == 0 {
+		return false
+	}
+	target, err1 := filepath.EvalSymlinks(filepath.Join(dir, e.Name()))
+	base, err2 := filepath.EvalSymlinks(root)
+	if err1 != nil || err2 != nil || !within(target, base) {
+		return false
+	}
+	info, err := os.Stat(target)
+	return err == nil && info.Mode().IsRegular()
+}
+
+// plainFiles lists the regular files (not links or folders) in a folder.
+func plainFiles(dir string) map[string]bool {
+	entries, _ := os.ReadDir(dir)
+	out := map[string]bool{}
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			out[e.Name()] = true
+		}
+	}
+	return out
 }
 
 func naturalLess(items []string) func(i, j int) bool {
@@ -683,7 +737,9 @@ func (l *library) probeAll(paths []string) {
 // buildBook probes the files and assembles one catalogue entry.
 // A loose book is an audio file sitting beside other books rather than in a folder of
 // its own; its folder belongs to the books around it.
-func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitle string, loose bool) (Book, error) {
+// plain lists the regular files in a book folder (from the scan's own listing), so
+// sidecars and covers are looked for without a stat per candidate name.
+func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitle string, loose bool, plain map[string]bool) (Book, error) {
 	id, err := l.idFor(r, dir, files[0], loose)
 	if err != nil {
 		return Book{}, err
@@ -757,7 +813,7 @@ func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitl
 	// Metadata files in the book's folder have the last word, chapters included (the
 	// chapter list audiobookshelf's editor saves into metadata.json).
 	if !loose {
-		sm, modified := sidecarMeta(dir)
+		sm, modified := sidecarMeta(dir, plain)
 		b.apply(sm)
 		b.UpdatedAt = max(b.UpdatedAt, modified)
 		if chs := clampChapters(sm.Chapters, b.DurationMs); len(chs) > 0 {
@@ -782,6 +838,9 @@ func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitl
 	}
 	if !loose && b.coverPath == "" {
 		for _, n := range coverName {
+			if !plain[n] {
+				continue
+			}
 			p := filepath.Join(dir, n)
 			if info, err := os.Stat(p); err == nil {
 				b.coverPath = p
@@ -865,7 +924,7 @@ func (l *library) idFor(r *libRoot, dir, firstFile string, loose bool) (string, 
 func (l *library) idByPath(r *libRoot, rel, preferred string) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if id, ok := r.ids[rel]; ok && (preferred == "" || id == preferred) {
+	if id, ok := r.ids[rel]; ok && validID(id) && (preferred == "" || id == preferred) {
 		return id
 	}
 	if preferred == "" {
@@ -888,8 +947,8 @@ func newID() string {
 }
 
 // extractCover pulls embedded artwork out of an audio file with ffmpeg, once. A file
-// with none is remembered (an empty <id>.none beside the covers) until it changes, so
-// rescans do not try it again.
+// with none is remembered (<id>.none beside the covers) until it changes, so rescans do
+// not try it again.
 func (l *library) extractCover(id, file string) string {
 	dir := filepath.Join(l.dataDir, "covers")
 	out, none := filepath.Join(dir, id+".jpg"), filepath.Join(dir, id+".none")
@@ -900,7 +959,10 @@ func (l *library) extractCover(id, file string) string {
 	if info, err := os.Stat(out); err == nil && !src.ModTime().After(info.ModTime()) {
 		return out
 	}
-	if info, err := os.Stat(none); err == nil && !src.ModTime().After(info.ModTime()) {
+	// The marker holds the file's size and time: any change at all (a copy finishing,
+	// even one that restores an older time) tries again.
+	stamp := fmt.Sprintf("%d %d", src.Size(), src.ModTime().UnixNano())
+	if data, err := os.ReadFile(none); err == nil && string(data) == stamp {
 		return ""
 	}
 	if !haveFFmpeg() {
@@ -916,7 +978,7 @@ func (l *library) extractCover(id, file string) string {
 		}
 	}
 	_ = os.Remove(out)
-	_ = os.WriteFile(none, nil, 0o644)
+	_ = os.WriteFile(none, []byte(stamp), 0o644)
 	return ""
 }
 

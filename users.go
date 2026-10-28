@@ -80,9 +80,13 @@ type Device struct {
 
 const pbkdfIterations = 600_000
 
-// User names start with a letter or digit (so never "." or ".."), since each names a
-// folder under users/.
-var userNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`)
+// New user names start and end with a letter, digit, _, @ or - (so never "." or ".."
+// and no trailing dot, which Windows drops), since each names a folder under users/.
+var userNameRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._@-]{0,62}[A-Za-z0-9_@-])?$`)
+
+// windowsDevice matches names Windows reserves for devices, as folder names (CON, NUL,
+// COM1, also with an extension).
+var windowsDevice = regexp.MustCompile(`(?i)^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)`)
 
 // migrateRoles gives a users.json from before roles existed its admins: everyone, as
 // everyone could do everything then. The caller holds s.mu (or owns s outright).
@@ -139,6 +143,19 @@ func (s *store) account(name string) (Account, bool) {
 	return s.accountLocked(name), true
 }
 
+// accountQuick is account without re-reading the users file or counting devices: what
+// each request needs once withUser has looked the token up.
+func (s *store) accountQuick(name string) Account {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.userDB[name]
+	a := Account{Name: name, Role: rec.Role, Libraries: rec.Libraries}
+	if a.Role == "" {
+		a.Role = roleUser
+	}
+	return a
+}
+
 func (s *store) accountLocked(name string) Account {
 	rec := s.userDB[name]
 	a := Account{Name: name, Role: rec.Role, Libraries: rec.Libraries}
@@ -156,9 +173,6 @@ func (s *store) accountLocked(name string) Account {
 // setPassword creates a user, or changes an existing one's password. The first user
 // on a server is its admin; later ones are plain users until made otherwise.
 func (s *store) setPassword(name, password string) error {
-	if !userNameRe.MatchString(name) {
-		return fmt.Errorf("user names are letters, digits and . _ @ - (1 to 64 characters, starting with a letter or digit)")
-	}
 	if len(password) < 8 {
 		return errors.New("use at least 8 characters")
 	}
@@ -174,6 +188,10 @@ func (s *store) setPassword(name, password string) error {
 	defer s.mu.Unlock()
 	rec, exists := s.userDB[name]
 	if !exists {
+		// The rules apply to new names; existing ones keep working.
+		if !userNameRe.MatchString(name) || windowsDevice.MatchString(name) {
+			return fmt.Errorf("user names are letters, digits and . _ @ - (1 to 64 characters, starting with a letter or digit, not ending in a dot)")
+		}
 		// Folders are case-insensitive on some systems: Bob and bob would share one.
 		for other := range s.userDB {
 			if strings.EqualFold(other, name) {
@@ -186,10 +204,11 @@ func (s *store) setPassword(name, password string) error {
 		}
 	}
 	rec.Salt, rec.Hash, rec.Iter = hex.EncodeToString(salt), hex.EncodeToString(hash), pbkdfIterations
-	s.userDB[name] = rec
+	// The folder first: a name the filesystem refuses must not leave a half-made user.
 	if err := os.MkdirAll(filepath.Join(s.dir, "users", name), 0o755); err != nil {
 		return err
 	}
+	s.userDB[name] = rec
 	// A password change signs every device out; they ask for it again.
 	s.dropTokensLocked(name)
 	if err := s.saveTokens(); err != nil {
@@ -300,6 +319,13 @@ func (s *store) dropTokensLocked(name string) {
 			delete(s.tokens, t)
 		}
 	}
+}
+
+// deviceName is the name a token was issued to.
+func (s *store) deviceName(token string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tokens[token].Device
 }
 
 // maxDevices is how many devices one user may have signed in; signing in on one more

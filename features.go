@@ -78,14 +78,11 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request, user, to
 		writeError(w, http.StatusBadRequest, "current and new passwords are required")
 		return
 	}
-	now := time.Now()
-	key := "user:" + strings.ToLower(user)
-	if wait := s.userLimit.retryAfter(key, now); wait > 0 {
-		tooMany(w, wait, "too many wrong passwords; try again later")
+	ok, answered := s.passwordAttempt(w, r, user, in.Current)
+	if answered {
 		return
 	}
-	if !s.store.checkPassword(user, in.Current) {
-		s.userLimit.fail(key, now)
+	if !ok {
 		writeError(w, http.StatusForbidden, "the current password is wrong")
 		return
 	}
@@ -117,7 +114,7 @@ func uploadable(name string) bool {
 		return true
 	}
 	switch ext {
-	case ".jpg", ".jpeg", ".png", ".webp", ".opf", ".json", ".txt", ".cue":
+	case ".jpg", ".jpeg", ".png", ".webp", ".opf", ".json", ".txt":
 		return true
 	}
 	return false
@@ -145,7 +142,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user, token stri
 		return
 	}
 	for _, part := range strings.Split(rel, "/") {
-		if part == ".." || strings.HasPrefix(part, ".") || strings.ContainsAny(part, `:*?"<>|`) {
+		if strings.HasPrefix(part, ".") || strings.ContainsAny(part, `:*?"<>|`) {
 			writeError(w, http.StatusBadRequest, "that path is not allowed")
 			return
 		}
@@ -501,5 +498,12 @@ func (s *server) loadSettings(name string, interval time.Duration) {
 		if err := json.Unmarshal(data, &s.settings.saved); err != nil {
 			log.Printf("settings.json: %v", err)
 		}
+	}
+	// The file may have been edited by hand: keep it within what the page allows.
+	saved := &s.settings.saved
+	saved.Name = clip(strings.TrimSpace(saved.Name), 80)
+	if m := saved.RescanMinutes; m != nil && (*m < 0 || *m > 7*24*60) {
+		log.Printf("settings.json: ignoring rescanMinutes %d", *m)
+		saved.RescanMinutes = nil
 	}
 }

@@ -54,6 +54,18 @@ type store struct {
 	// What users.json and tokens.json looked like when last read or written, so that
 	// changes made by the command line while the server runs are picked up.
 	usersSeen, tokensSeen fileStamp
+
+	// One lock per user for their own files (progress, bookmarks, sessions), so one
+	// user's file work never holds up anyone else's requests.
+	userLocks sync.Map // name -> *sync.Mutex
+}
+
+// lockUser locks a user's own files and returns the unlock.
+func (s *store) lockUser(name string) func() {
+	m, _ := s.userLocks.LoadOrStore(name, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 type fileStamp struct {
@@ -138,8 +150,7 @@ func (s *store) bookmarksPath(user string) string {
 }
 
 func (s *store) allProgress(user string) ([]Progress, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lockUser(user)()
 	m := map[string]Progress{}
 	if err := readJSON(s.progressPath(user), &m); err != nil {
 		return nil, err
@@ -157,8 +168,8 @@ func (s *store) allProgress(user string) ([]Progress, error) {
 // An accepted record also adds to the user's listening sessions; token says which
 // device it came from.
 func (s *store) putProgress(user, token string, in Progress) (Progress, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	device := s.deviceName(token)
+	defer s.lockUser(user)()
 	m := map[string]Progress{}
 	if err := readJSON(s.progressPath(user), &m); err != nil {
 		return Progress{}, false, err
@@ -192,7 +203,7 @@ func (s *store) putProgress(user, token string, in Progress) (Progress, bool, er
 		return Progress{}, false, err
 	}
 	if had {
-		if err := s.recordListening(user, s.tokens[token].Device, cur, in); err != nil {
+		if err := s.recordListening(user, device, cur, in); err != nil {
 			log.Printf("sessions for %s: %v", user, err)
 		}
 	}
@@ -200,8 +211,7 @@ func (s *store) putProgress(user, token string, in Progress) (Progress, bool, er
 }
 
 func (s *store) deleteProgress(user, bookID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lockUser(user)()
 	m := map[string]Progress{}
 	if err := readJSON(s.progressPath(user), &m); err != nil {
 		return err
@@ -213,8 +223,7 @@ func (s *store) deleteProgress(user, bookID string) error {
 // ------------------------------------------------------------------ bookmarks
 
 func (s *store) allBookmarks(user string) ([]Bookmark, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lockUser(user)()
 	var list []Bookmark
 	if err := readJSON(s.bookmarksPath(user), &list); err != nil {
 		return nil, err
@@ -240,8 +249,7 @@ func clip(s string, n int) string {
 // addBookmark stores a bookmark, or returns the existing one when the same
 // (bookId, positionMs, createdAt) was posted before, so retries never duplicate.
 func (s *store) addBookmark(user string, b Bookmark) (Bookmark, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lockUser(user)()
 	var list []Bookmark
 	if err := readJSON(s.bookmarksPath(user), &list); err != nil {
 		return Bookmark{}, err
@@ -265,8 +273,7 @@ func (s *store) addBookmark(user string, b Bookmark) (Bookmark, error) {
 
 // deleteBookmark reports whether the bookmark existed.
 func (s *store) deleteBookmark(user, bookID, id string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lockUser(user)()
 	var list []Bookmark
 	if err := readJSON(s.bookmarksPath(user), &list); err != nil {
 		return false, err

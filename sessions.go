@@ -60,11 +60,15 @@ func (s *store) sessionsPath(user string) string {
 	return filepath.Join(s.dir, "users", user, "sessions.json")
 }
 
+// maxSessions is how many sessions a user's history keeps; older ones drop off.
+const maxSessions = 20000
+
 // recordListening adds the stretch between prev and next to the user's sessions. The
-// caller holds s.mu.
+// caller holds the user's lock.
 func (s *store) recordListening(user, device string, prev, next Progress) error {
 	ms := listened(prev, next)
-	if ms <= 0 {
+	// A client's clock may be a little ahead; one far ahead is not listening.
+	if ms <= 0 || next.UpdatedAt > time.Now().Add(10*time.Minute).UnixMilli() {
 		return nil
 	}
 	var list []ListeningSession
@@ -90,14 +94,16 @@ func (s *store) recordListening(user, device string, prev, next Progress) error 
 		StartedAt: start, EndedAt: next.UpdatedAt,
 		StartPositionMs: prev.PositionMs, EndPositionMs: next.PositionMs, ListenedMs: ms,
 	})
+	if len(list) > maxSessions {
+		list = list[len(list)-maxSessions:]
+	}
 	return writeJSONCompact(s.sessionsPath(user), list)
 }
 
 // sessions returns the user's sessions, oldest first, optionally for one book and
 // only those ending after since.
 func (s *store) sessions(user, bookID string, since int64) ([]ListeningSession, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lockUser(user)()
 	var list []ListeningSession
 	if err := readJSON(s.sessionsPath(user), &list); err != nil {
 		return nil, err

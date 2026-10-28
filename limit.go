@@ -35,6 +35,22 @@ func (l *loginLimiter) retryAfter(key string, now time.Time) time.Duration {
 	return recent[len(recent)-l.max].Add(l.window).Sub(now)
 }
 
+// try counts an attempt for key unless key is over the limit, in one step, so a burst
+// of parallel attempts cannot all pass the check before any is counted. It returns
+// how long to wait (and counts nothing) when over the limit.
+func (l *loginLimiter) try(key string, now time.Time) time.Duration {
+	l.mu.Lock()
+	recent := l.prune(key, now)
+	if len(recent) >= l.max {
+		wait := recent[len(recent)-l.max].Add(l.window).Sub(now)
+		l.mu.Unlock()
+		return wait
+	}
+	l.mu.Unlock()
+	l.fail(key, now)
+	return 0
+}
+
 func (l *loginLimiter) fail(key string, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

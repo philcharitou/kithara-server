@@ -12,7 +12,8 @@ import (
 	"time"
 )
 
-// The protocol version this server speaks (docs/kithara-sync-protocol.md).
+// The protocol version this server speaks (docs/kithara-sync-protocol.md in the app
+// repository).
 const protocolVersion = 1
 
 type server struct {
@@ -98,6 +99,11 @@ func newServer(st *store, lib *library, name string) *server {
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	// Request bodies are small JSON, except uploads, which take as long as they take;
+	// a client cannot hold a connection open by sending one byte at a time.
+	if r.Method != "GET" && r.Method != "HEAD" && !strings.HasSuffix(r.URL.Path, "/files") && !strings.HasSuffix(r.URL.Path, "/cover") {
+		_ = http.NewResponseController(w).SetReadDeadline(start.Add(30 * time.Second))
+	}
 	rec := &statusRecorder{ResponseWriter: w, status: 200}
 	s.mux.ServeHTTP(rec, r)
 	if !strings.HasPrefix(r.URL.Path, "/audio/") || rec.status >= 400 {
@@ -151,6 +157,37 @@ func (s *server) withAdmin(h userHandler) http.HandlerFunc {
 	})
 }
 
+// passwordAttempt checks a password the careful way: the attempt is counted against
+// the client's address and the account before the (deliberately slow) check, so
+// parallel guesses cannot slip under the limit, and a right password takes it back.
+// At most len(authSlots) checks run at once. When over the limit, or the client gave
+// up while waiting, it answers the request itself and returns answered.
+func (s *server) passwordAttempt(w http.ResponseWriter, r *http.Request, user, password string) (ok, answered bool) {
+	now := time.Now()
+	ipKey, userKey := "ip:"+clientIP(r, s.trustProxy), "user:"+clip(strings.ToLower(user), 64)
+	if wait := s.ipLimit.try(ipKey, now); wait > 0 {
+		tooMany(w, wait, "too many failed attempts; try again later")
+		return false, true
+	}
+	if wait := s.userLimit.try(userKey, now); wait > 0 {
+		s.ipLimit.forget(ipKey, now)
+		tooMany(w, wait, "too many failed attempts; try again later")
+		return false, true
+	}
+	select {
+	case s.authSlots <- struct{}{}:
+	case <-r.Context().Done():
+		return false, true
+	}
+	ok = s.store.checkPassword(user, password)
+	<-s.authSlots
+	if ok {
+		s.ipLimit.forget(ipKey, now)
+		s.userLimit.forget(userKey, now)
+	}
+	return ok, false
+}
+
 // bookOr404 is the book in the request's path, if the user may see it; otherwise it
 // answers 404 and returns nil.
 func (s *server) bookOr404(w http.ResponseWriter, r *http.Request, user string) *Book {
@@ -167,10 +204,10 @@ func tooMany(w http.ResponseWriter, wait time.Duration, msg string) {
 	writeError(w, http.StatusTooManyRequests, msg)
 }
 
-// acct is the signed-in user's account (withUser has made sure there is one).
+// acct is the signed-in user's role and libraries (withUser has made sure the user
+// exists and the users file is fresh), without the device count most requests skip.
 func (s *server) acct(user string) Account {
-	a, _ := s.store.account(user)
-	return a
+	return s.store.accountQuick(user)
 }
 
 func writeJSONResponse(w http.ResponseWriter, status int, v any) {
@@ -206,11 +243,12 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, user, token stri
 		out["books"] = v.info.Books
 	}
 	if a.admin() {
+		accs := s.store.accounts()
 		devices := 0
-		for _, acc := range s.store.accounts() {
+		for _, acc := range accs {
 			devices += acc.Devices
 		}
-		out["users"] = len(s.store.users())
+		out["users"] = len(accs)
 		out["devices"] = devices
 		out["platform"] = runtime.GOOS + "/" + runtime.GOARCH
 		out["goVersion"] = runtime.Version()
@@ -233,27 +271,16 @@ func (s *server) auth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
-	now := time.Now()
-	ipKey, userKey := "ip:"+clientIP(r, s.trustProxy), "user:"+strings.ToLower(in.Username)
-	if wait := max(s.ipLimit.retryAfter(ipKey, now), s.userLimit.retryAfter(userKey, now)); wait > 0 {
-		tooMany(w, wait, "too many failed sign-ins; try again later")
+	ok, answered := s.passwordAttempt(w, r, in.Username, in.Password)
+	if answered {
 		return
 	}
-	// Count the attempt before checking it, so a burst of parallel guesses cannot all
-	// slip in under the limit; a right password takes it back.
-	s.ipLimit.fail(ipKey, now)
-	s.userLimit.fail(userKey, now)
-	s.authSlots <- struct{}{}
-	ok := s.store.checkPassword(in.Username, in.Password)
-	<-s.authSlots
 	if !ok {
 		// A small pause takes the fun out of guessing.
 		time.Sleep(400 * time.Millisecond)
 		writeError(w, http.StatusUnauthorized, "wrong user name or password")
 		return
 	}
-	s.ipLimit.forget(ipKey, now)
-	s.userLimit.forget(userKey, now)
 	token, err := s.store.issueToken(in.Username, in.Device)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -320,7 +347,8 @@ func (s *server) allProgress(w http.ResponseWriter, r *http.Request, user, token
 
 func (s *server) putProgress(w http.ResponseWriter, r *http.Request, user, token string) {
 	bookID := r.PathValue("bookId")
-	if s.bookOr404(w, r, user) == nil {
+	b := s.bookOr404(w, r, user)
+	if b == nil {
 		return
 	}
 	var in Progress
@@ -332,7 +360,7 @@ func (s *server) putProgress(w http.ResponseWriter, r *http.Request, user, token
 	if in.UpdatedAt == 0 {
 		in.UpdatedAt = time.Now().UnixMilli()
 	}
-	if b := s.lib.book(bookID); b != nil && b.DurationMs > 0 && in.PositionMs > b.DurationMs {
+	if b.DurationMs > 0 && in.PositionMs > b.DurationMs {
 		in.PositionMs = b.DurationMs
 	}
 	stored, accepted, err := s.store.putProgress(user, token, in)
