@@ -395,3 +395,15 @@ input.scrub::-moz-range-thumb { width: 8px; height: 18px; border-radius: 3px; ba
 .wide-btn { width: 100%; justify-content: center; }
 .or { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+
+/* transcripts */
+.tx-bar { position: sticky; top: 48px; z-index: 1; background: var(--card); padding-bottom: 8px; margin-bottom: 4px; }
+.tx { display: flex; flex-direction: column; }
+.tx-head { font-size: 13px; font-weight: 600; color: var(--on-surface-variant); margin: 14px 0 4px; }
+.tx-line { display: flex; gap: 12px; text-align: left; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: var(--on-surface); font: inherit; line-height: 1.5; cursor: pointer; }
+.tx-line:hover { background: var(--hover); }
+.tx-line.now { background: var(--secondary-container); color: var(--on-secondary-container); }
+.tx-time { flex: none; width: 56px; color: var(--outline); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 2px; }
+.tx-line.now .tx-time { color: inherit; }
+.hit { cursor: pointer; }
+.hit:hover { background: var(--hover); }

@@ -70,6 +70,7 @@ const ICONS = {
   remove: "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z",
   add: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z",
   down: "M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z",
+  notes: "M14 17H4v2h10v-2zm6-8H4v2h16V9zM4 15h16v-2H4v2zM4 5v2h16V5H4z",
   queue: "M3 10h11v2H3zm0-4h11v2H3zm0 8h7v2H3zm13-1v8l6-4z",
   up: "M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z",
   phone: "M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z",
@@ -688,6 +689,7 @@ let searchTimer = 0;
 async function viewLibrary(tools) {
   await loadLibrary();
   const prefs = state.prefs;
+  tools.append(el("button", { class: "btn secondary small", type: "button", onclick: searchTranscriptsSheet }, icon("search"), "Search what's said"));
   if (isAdmin()) {
     tools.append(rescanButton());
   }
@@ -872,6 +874,7 @@ function bookDetail(b) {
     progress,
     b.description ? el("p", { class: "desc" }, b.description) : null,
     bookmarksPanel(b),
+    transcriptPanel(b),
     b.chapters.length ? el("details", { class: "panel" },
       el("summary", {}, icon("chapters"), span("strong grow", plural(b.chapters.length, "chapter")), cur >= 0 ? span("small muted", `on ${cur + 1}`) : null),
       el("div", { class: "lines" }, b.chapters.map((c, i) => el("div", { class: i === cur ? "now" : "" },
@@ -1294,7 +1297,7 @@ function seekTo(ms, autoplay = !player.audio.paused) {
   drawPlayer();
 }
 
-async function playBook(id, atMs) {
+async function playBook(id, atMs, { keepSheet = false } = {}) {
   const b = state.books.find((x) => x.id === id);
   if (!b) return;
   try {
@@ -1309,7 +1312,7 @@ async function playBook(id, atMs) {
     setSpeed(Number(state.prefs.speed || 1));
     seekTo(from, true);
     mediaSession();
-    dialog.open && dialog.close();
+    if (!keepSheet && dialog.open) dialog.close();
   } catch (e) { toast(e.message); }
 }
 
@@ -1469,6 +1472,7 @@ function drawPlayer() {
       speed, sleep,
       iconBtn("bookmark", "Add a bookmark here", () => addBookmark(b, playerPosition())),
       iconBtn("chapters", "Chapters", () => openBook(b.id, "chapters")),
+      iconBtn("notes", "Transcript", () => openTranscript(b)),
       iconBtn("close", "Stop", stopPlayer)));
   player.scrub = scrub;
   player.times = times;
@@ -1499,6 +1503,7 @@ function updatePlayerTime() {
   player.times.lastChild.textContent = "-" + fmtClock(b.durationMs - pos);
   const i = currentChapterAt(b, pos);
   player.chapter.textContent = i >= 0 ? `${b.chapters[i].title} · ${i + 1} of ${b.chapters.length}` : `${fmtDuration(b.durationMs - pos)} left`;
+  followTranscript(pos);
 }
 
 // ------------------------------------------------------------------ progress and bookmarks
@@ -1930,6 +1935,7 @@ async function viewSettings() {
 
   return el("div", { class: "widgets" },
     widget("General", { wide: true, body: form }),
+    widget("Transcription", { wide: true, body: transcriptionSettings() }),
     widget("Single sign-on", { wide: true, body: await oidcForm() }),
     widget("Backup", { body: [
       el("p", { class: "small" }, "Everything that can't be rebuilt from the audiobook folders: accounts, everyone's progress, bookmarks, playlists and listening history, collections, added libraries, saved details and covers, and these settings."),
@@ -2007,6 +2013,232 @@ async function viewActivity(tools, days = 30) {
         el("p", { class: "muted", style: "padding:14px" }, "No listening in this period.")),
     el("p", { class: "tiny muted", style: "margin-top:10px" }, "Apps that keep their own listening log send it; for the others it is worked out from progress syncs, so it is an estimate and leans low."),
   ];
+}
+
+// ------------------------------------------------------------------ transcripts
+
+// Transcripts are made on the server by whisper.cpp, or on a phone and sent up. The
+// page shows where a book stands, reads along with the player, and searches them.
+
+async function loadTranscript(bookId) {
+  return api(`/api/books/${encodeURIComponent(bookId)}/transcript`);
+}
+
+function transcriptPanel(b) {
+  const box = el("div", { class: "panel stack" }, span("small muted", "Transcript: loading…"));
+  const draw = async () => {
+    const [tx, st] = await Promise.all([loadTranscript(b.id), api("/api/transcription")]).catch(() => [null, null]);
+    if (!tx) return box.replaceChildren(span("small muted", "Transcript: could not load"));
+    const total = chapterCount(b);
+    const done = tx.chapters.filter((c) => c.status === "DONE").length;
+    const mine = st.queue.filter((j) => j.bookId === b.id).length;
+    const running = st.running?.bookId === b.id ? st.running : null;
+    const busy = running || mine > 0;
+    const transcribe = async (again) => {
+      try {
+        const r = await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "POST", body: again ? { again: true } : {} });
+        toast(r.queued ? `Queued ${plural(r.queued, "chapter")}` : "Nothing left to transcribe");
+        draw();
+      } catch (e) { toast(e.message); }
+    };
+    const stop = async () => {
+      try { await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "DELETE" }); draw(); } catch (e) { toast(e.message); }
+    };
+    const actions = el("div", { class: "row" },
+      tx.passages.length ? el("button", { class: "btn secondary small", type: "button", onclick: () => openTranscript(b, tx) }, icon("notes"), "Read along") : null,
+      st.available && !busy && done < total ? el("button", { class: "btn secondary small", type: "button", onclick: () => transcribe(false) }, icon("magic"), done ? "Transcribe the rest" : "Transcribe on the server") : null,
+      st.available && !busy && done === total && isAdmin() ? el("button", { class: "btn ghost small", type: "button", onclick: () => transcribe(true) }, "Transcribe again") : null,
+      busy ? el("button", { class: "btn ghost small", type: "button", onclick: stop }, "Stop") : null);
+    const models = [...new Set(tx.chapters.map((c) => c.model))].join(", ");
+    box.replaceChildren(...[
+      el("div", { class: "row" },
+        icon("notes"),
+        span("strong grow", done === total ? "Transcribed" : done ? `${done} of ${plural(total, "chapter")} transcribed` : "Not transcribed"),
+        models ? span("small muted", models) : null),
+      running ? el("div", { class: "stack" },
+        span("small", `Transcribing chapter ${running.chapter + 1}${mine ? ` · ${plural(mine, "more chapter")} waiting` : ""}`),
+        gradientProgress(running.progress)) :
+        mine ? span("small muted", `${plural(mine, "chapter")} waiting their turn`) : null,
+      !st.available && done < total ? span("tiny muted", "This server can't transcribe: whisper.cpp isn't installed.") : null,
+      actions.children.length ? actions : null].filter(Boolean));
+    if (busy) setTimeout(() => box.isConnected && draw(), 3000);
+  };
+  draw();
+  return box;
+}
+
+const chapterCount = (b) => Math.max(1, b.chapters.length);
+
+// The read-along sheet: the transcript by chapter, the passage being spoken lit and
+// kept in view, a tap to play from any passage, and a filter.
+const tx = { bookId: null, lines: [], now: -1, userScrolledAt: 0, filter: "" };
+for (const ev of ["wheel", "touchmove"]) dialog.addEventListener(ev, () => { tx.userScrolledAt = Date.now(); }, { passive: true });
+
+async function openTranscript(b, loaded) {
+  let data = loaded;
+  if (!data) {
+    try { data = await loadTranscript(b.id); } catch (e) { return toast(e.message); }
+  }
+  if (!data.passages.length) {
+    return openSheet("Transcript · " + b.title, [emptyNote("No transcript yet."), transcriptPanel(b)], { onBack: () => openBook(b.id) });
+  }
+  const list = el("div", { class: "tx" });
+  tx.bookId = b.id;
+  tx.lines = [];
+  tx.now = -1;
+  tx.filter = "";
+  let chapter = -1;
+  const frag = document.createDocumentFragment();
+  for (const p of data.passages) {
+    if (p.chapterIndex !== chapter) {
+      chapter = p.chapterIndex;
+      frag.append(el("h3", { class: "tx-head" }, b.chapters[chapter]?.title || `Part ${chapter + 1}`));
+    }
+    const line = el("button", { type: "button", class: "tx-line", onclick: () => playFrom(b, p.startMs) },
+      span("tx-time", fmtClock(p.startMs)), span("tx-text", p.text));
+    tx.lines.push({ el: line, start: p.startMs, text: p.text.toLowerCase() });
+    frag.append(line);
+  }
+  list.append(frag);
+  const count = span("small muted", "");
+  const search = el("input", { type: "search", placeholder: "Find in this book", "aria-label": "Find in this book", oninput: () => {
+    tx.filter = search.value.trim().toLowerCase();
+    let n = 0;
+    for (const l of tx.lines) { const show = !tx.filter || l.text.includes(tx.filter); l.el.hidden = !show; n += show; }
+    list.querySelectorAll(".tx-head").forEach((h) => { h.hidden = !!tx.filter; });
+    count.textContent = tx.filter ? plural(n, "passage") : "";
+  } });
+  const playing = () => player.book?.id === b.id;
+  const playBtn = iconBtn(playing() && !player.audio.paused ? "pause" : "play", "Play or pause", () => {
+    if (!playing()) return playBook(b.id, undefined, { keepSheet: true });
+    player.audio.paused ? player.audio.play() : player.audio.pause();
+  });
+  openSheet("Transcript · " + b.title, [
+    el("div", { class: "toolbar tx-bar" },
+      playBtn, iconBtn("replay", "Back 30 seconds", () => playing() && skip(-30)),
+      el("div", { class: "search grow" }, icon("search"), search), count),
+    list,
+  ], { onBack: () => openBook(b.id), wide: true });
+  tx.playBtn = playBtn;
+  if (playing()) followTranscript(playerPosition(), true);
+}
+
+function playFrom(b, ms) {
+  if (player.book?.id === b.id) seekTo(ms, true);
+  else playBook(b.id, ms, { keepSheet: true });
+}
+
+// followTranscript lights the passage at pos, and scrolls to it unless the reader has
+// scrolled away in the last few seconds or is filtering.
+function followTranscript(pos, jump = false) {
+  if (!dialog.open || tx.bookId !== player.book?.id || !tx.lines.length || !tx.lines[0].el.isConnected) return;
+  const icon_ = player.audio.paused ? "play" : "pause";
+  if (tx.playBtn && tx.playBtn.dataset.icon !== icon_) { tx.playBtn.dataset.icon = icon_; tx.playBtn.replaceChildren(icon(icon_)); }
+  let lo = 0, hi = tx.lines.length - 1, at = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (tx.lines[mid].start <= pos) { at = mid; lo = mid + 1; } else hi = mid - 1; }
+  if (at === tx.now) return;
+  tx.lines[tx.now]?.el.classList.remove("now");
+  tx.now = at;
+  const line = tx.lines[at]?.el;
+  if (!line) return;
+  line.classList.add("now");
+  if (!tx.filter && (jump || Date.now() - tx.userScrolledAt > 5000)) line.scrollIntoView({ block: "center", behavior: jump ? "auto" : "smooth" });
+}
+
+// Search what's said across every transcribed book the user may see.
+function searchTranscriptsSheet() {
+  const results = el("div", { class: "lines" });
+  const input = el("input", { type: "search", placeholder: "A word or a phrase", "aria-label": "Search transcripts", autofocus: true });
+  let timer;
+  const run = async () => {
+    const q = input.value.trim();
+    if (q.length < 2) return results.replaceChildren();
+    try {
+      const r = await api("/api/transcripts/search?q=" + encodeURIComponent(q));
+      if (input.value.trim() !== q) return;
+      results.replaceChildren(...(r.hits.length ? r.hits.map((h) => {
+        const b = state.books.find((x) => x.id === h.bookId);
+        if (!b) return null;
+        return el("div", { class: "hit", role: "button", tabindex: 0, onclick: () => { openTranscript(b).then(() => playFrom(b, h.startMs)); } },
+          span("t", el("div", { class: "strong clip" }, b.title), el("div", { class: "small" }, h.text)),
+          span("end", fmtClock(h.startMs)));
+      }).filter(Boolean) : [el("div", {}, span("muted", "Nothing found."))]),
+      r.more ? el("div", {}, span("tiny muted", "Showing the first 200.")) : "");
+    } catch (e) { toast(e.message); }
+  };
+  input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 250); });
+  openSheet("Search what's said", [el("div", { class: "search" }, icon("search"), input), results]);
+}
+
+// transcriptionSettings: the engine, the model and the queue, kept up to date while a
+// job runs or a model downloads.
+function transcriptionSettings() {
+  const box = el("div", {}, el("p", { class: "muted" }, "Loading…"));
+  const draw = async () => {
+    let st;
+    try { st = await api("/api/transcription"); } catch (e) { box.replaceChildren(el("p", { class: "err" }, e.message)); return false; }
+    await (state.books.length ? null : loadLibrary());
+    if (!st.available) {
+      box.replaceChildren(
+        el("p", { class: "small" }, "Transcribe books on this machine with whisper.cpp, usually far faster than on a phone. The Docker image includes it; otherwise install whisper.cpp so that whisper-cli is on the PATH (or point KITHARA_WHISPER at it), and this section comes alive within a minute."));
+      return false;
+    }
+    const s = st.settings;
+    const model = el("select", {}, st.models.map((m) => el("option", { value: m.id, selected: m.id === s.model ? true : null },
+      `${m.label}, ${fmtBytes(m.sizeBytes)}${m.installed ? " · downloaded" : ""}`)));
+    const threads = el("input", { type: "number", min: 1, max: 64, value: s.threads });
+    const lang = el("input", { type: "text", value: s.language, maxlength: 4, placeholder: "auto" });
+    const english = () => st.models.find((m) => m.id === model.value)?.englishOnly;
+    const syncLang = () => { lang.disabled = english(); if (english()) lang.value = "en"; };
+    model.addEventListener("change", syncLang);
+    syncLang();
+    const cur = st.models.find((m) => m.id === s.model);
+    const dl = st.downloads?.[s.model];
+    const title = (id) => state.books.find((b) => b.id === id)?.title || "A removed book";
+    const form = el("form", { class: "form", onsubmit: async (ev) => {
+      ev.preventDefault();
+      try {
+        await api("/api/settings/transcription", { method: "PUT", body: { model: model.value, threads: Number(threads.value), language: english() ? "" : lang.value.trim() } });
+        toast("Transcription settings saved");
+        draw();
+      } catch (e) { toast(e.message); }
+    } },
+    el("label", { class: "field" }, el("span", {}, "Model"), model),
+    el("label", { class: "field" }, el("span", {}, "Processor threads"), threads),
+    el("label", { class: "field" }, el("span", {}, "Language (a code such as de, or auto)"), lang),
+    el("p", { class: "wide tiny muted" }, "Bigger models are slower and more accurate; the English-only ones are the better choice for English books. The phone app uses tiny, base or small."),
+    el("div", { class: "wide row end" }, el("button", { class: "btn", type: "submit" }, "Save")));
+
+    const model_ = el("div", { class: "row", style: "margin:4px 0 12px" },
+      dl ? (dl.error ? span("small err grow", "Download failed: " + dl.error) : el("div", { class: "grow stack" }, span("small", `Downloading ${cur.label}: ${fmtBytes(dl.got)} of ${fmtBytes(dl.total)}`), gradientProgress(dl.total ? dl.got / dl.total : 0))) :
+        span("small grow " + (st.ready ? "" : "err"), st.ready ? `${cur.label} is downloaded and ready.` : `${cur.label} isn't downloaded yet; nothing is transcribed until it is.`),
+      !st.ready && (!dl || dl.error) ? el("button", { class: "btn secondary small", type: "button", onclick: async () => {
+        try { await api(`/api/transcription/models/${encodeURIComponent(s.model)}`, { method: "POST" }); draw(); } catch (e) { toast(e.message); }
+      } }, icon("download"), "Download " + fmtBytes(cur.sizeBytes)) : null);
+
+    const whole = el("button", { class: "btn secondary small", type: "button", onclick: async () => {
+      if (!confirm("Transcribe every chapter of every book not transcribed yet? On a big library this runs for days; it can be stopped at any time.")) return;
+      try { const r = await api("/api/transcription/library", { method: "POST" }); toast(`Queued ${plural(r.queued, "chapter")}`); draw(); } catch (e) { toast(e.message); }
+    } }, icon("magic"), "Transcribe the whole library");
+    const clear = el("button", { class: "btn ghost small", type: "button", onclick: async () => {
+      try { await api("/api/transcription/queue", { method: "DELETE" }); draw(); } catch (e) { toast(e.message); }
+    } }, "Stop and clear the queue");
+    const waiting = st.queue.length;
+    box.replaceChildren(
+      model_, form,
+      el("div", { class: "panel stack", style: "margin-top:12px" },
+        st.running ? el("div", { class: "stack" },
+          span("small", `Transcribing ${title(st.running.bookId)}, chapter ${st.running.chapter + 1}`),
+          gradientProgress(st.running.progress)) : span("small muted", waiting ? "Waiting for the model" : "Nothing being transcribed."),
+        waiting ? span("small muted", `${plural(waiting, "chapter")} waiting${waiting >= 500 ? " or more" : ""}`) : null,
+        st.lastError ? span("small err", "Last error: " + st.lastError) : null,
+        el("div", { class: "row" }, whole, st.running || waiting ? clear : null)),
+      el("p", { class: "tiny muted", style: "margin-top:8px" }, st.vad ? "Speech is found with whisper.cpp's voice-activity detector, so passages begin where speech does." : "This whisper.cpp has no voice-activity detector; passages follow Whisper's own timing."));
+    return !!(st.running || waiting || dl && !dl.error);
+  };
+  const loop = async () => { if (box.isConnected && await draw()) setTimeout(loop, 2000); };
+  draw().then((busy) => { if (busy) setTimeout(loop, 2000); });
+  return box;
 }
 
 // ------------------------------------------------------------------ collections and playlists

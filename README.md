@@ -161,6 +161,26 @@ Someone the provider knows but this server doesn't is turned away. If you tick
 "make an account", they get a new plain account instead. Pick a claim the provider
 controls, not one people can edit themselves.
 
+## Transcripts
+
+The server can transcribe books with [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+usually far faster than a phone can, and keeps the transcripts for the web page's
+read-along and search and for the apps. The Docker image includes whisper.cpp. Elsewhere,
+build or install it so that `whisper-cli` is on the PATH, or set `KITHARA_WHISPER` to
+its path. The server finds it within a minute, without a restart.
+
+In **Settings → Transcription**, pick a model and download it. The English-only tiny,
+base, small and medium models are the ones for English books; large-v3-turbo handles
+other languages. Then transcribe books one at a time from their pages, or the whole
+library at once. Chapters are queued and worked through one at a time, and the queue
+survives restarts. ffmpeg cuts each chapter out of the book's files (even when it runs
+across two), and whisper.cpp's voice-activity detector starts each passage where the
+speech starts.
+
+Apps can also send up transcripts they made on the phone. Transcripts are kept per
+book, are shared by everyone who can see it, and survive edits to its chapters, but
+not changes to its audio files.
+
 ## Metadata matching
 
 An admin can look a book up with **Audible**, **Open Library** or **Google Books** and
@@ -191,6 +211,10 @@ users/<name>/sessions.json  listening sessions, sent by the apps or worked out f
 users/<name>/playlists.json
 collections.json      collections, shared by everyone
 oidc.json             the identity provider set-up, client secret included
+transcripts/<bookId>.json  transcripts, made here or sent up by the apps
+transcription.json    the transcription model, threads and language
+transcribe-queue.json chapters waiting to be transcribed
+models/               whisper.cpp models, downloaded on first use
 probe-cache.json      ffprobe results, by file
 covers/               artwork extracted from files, and covers chosen by matching
 metadata/<bookId>.json  metadata an admin matched or edited (audiobookshelf's format)
@@ -199,8 +223,9 @@ libraries.json        libraries added from the web page or `kithara-server libra
 settings.json         server name and rescan interval set from the web page
 ```
 
-Back up `users.json`, the `users/` folder, `collections.json`, `oidc.json` and
-`metadata/` (plus `covers/*-match.*`), or use the backup button on the web page.
+Back up `users.json`, the `users/` folder, `collections.json`, `oidc.json`,
+`transcripts/` and `metadata/` (plus `covers/*-match.*`), or use the backup button on
+the web page.
 Everything else is rebuilt from the library.
 Removing a user (`user remove NAME`) signs their devices out and moves their
 listening state aside rather than deleting it.
@@ -278,7 +303,19 @@ Everything the app talks is in the protocol document. Server specifics:
   scripts).
 - Progress records also carry `startedAt` and `finishedAt`, kept by the server.
 - `GET /api/health` lists optional `features`: `collections`, `playlists`,
-  `reportedSessions` and `oidc`.
+  `reportedSessions`, `oidc`, `transcripts`, and `transcription` when whisper.cpp is
+  installed.
+- **Transcripts:** `GET /api/books/{id}/transcript` returns `chapters` (`index`,
+  `status` DONE or PARTIAL, `model`, `engine`) and `passages` (`chapterIndex`,
+  `startMs`, `endMs`, `text`), on the book's timeline. `PUT
+  /api/books/{id}/transcript/chapters/{index}` with `status`, `model`, `engine` and
+  `passages` stores one chapter from an app. A chapter that is already DONE is only
+  replaced by an admin (`409` otherwise). `GET /api/transcripts/search?q=` (optionally
+  `&bookId=`) searches them. `POST /api/books/{id}/transcribe` (`chapters`, `again`)
+  queues chapters for the server, and `DELETE` on the same path stops them.
+  `GET /api/transcription` shows the engine and the queue. Admins also have
+  `PUT /api/settings/transcription`, `POST`/`DELETE /api/transcription/models/{id}`,
+  `POST /api/transcription/library` and `DELETE /api/transcription/queue`.
 - `GET /api/sessions` (optionally `?bookId=` and `?since=` ms) lists listening sessions.
   An app can send its own with `POST /api/sessions`, as `{"sessions": [...]}` (each with
   the app's own `id`; sending an id again replaces it). The server then stops estimating

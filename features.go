@@ -415,8 +415,8 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, user, token
 
 // backup sends what cannot be rebuilt from the library, as a zip: users and their
 // password hashes, everyone's progress, bookmarks, playlists and listening sessions,
-// collections, the libraries added at run time, book ids, saved metadata and covers,
-// settings and the identity provider set-up.
+// collections, transcripts, the libraries added at run time, book ids, saved metadata
+// and covers, settings and the identity provider set-up.
 // Device tokens are left out (restoring signs everyone in again), as are caches.
 func (s *server) backup(w http.ResponseWriter, r *http.Request, user, token string) {
 	dir := s.lib.dataDir
@@ -433,7 +433,8 @@ func (s *server) backup(w http.ResponseWriter, r *http.Request, user, token stri
 			return nil
 		}
 		keep := rel == "users.json" || rel == "libraries.json" || rel == "settings.json" || rel == "ids.json" ||
-			rel == "collections.json" || rel == "oidc.json" ||
+			rel == "collections.json" || rel == "oidc.json" || rel == "transcription.json" ||
+			strings.HasPrefix(rel, "transcripts/") ||
 			strings.HasPrefix(rel, "ids-") || strings.HasPrefix(rel, "users/") || strings.HasPrefix(rel, "metadata/") ||
 			strings.HasPrefix(rel, "covers/") && strings.Contains(path.Base(rel), "-match.")
 		if !keep || strings.HasSuffix(rel, ".tmp") {

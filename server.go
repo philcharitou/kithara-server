@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -36,6 +37,8 @@ type server struct {
 	lists    listStore
 	known    *knownClients // addresses that have signed in to an account before
 	oidc     *oidcBox
+	trans    *transcriber
+	tmu      sync.Mutex // transcript files
 }
 
 func newServer(st *store, lib *library, name string) *server {
@@ -43,6 +46,7 @@ func newServer(st *store, lib *library, name string) *server {
 		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher(), linkKey: newLinkKey(), started: time.Now(), known: newKnownClients()}
 	s.loadSettings(name, 0)
 	s.loadOIDC()
+	s.trans = newTranscriber(s)
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.health)
 	m.HandleFunc("POST /api/auth", s.auth)
@@ -64,6 +68,18 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("POST /api/sessions", s.withUser(s.reportSessions))
 	s.listRoutes(m, "collections", true)
 	s.listRoutes(m, "playlists", false)
+	m.HandleFunc("GET /api/books/{bookId}/transcript", s.withUser(s.getTranscript))
+	m.HandleFunc("PUT /api/books/{bookId}/transcript/chapters/{index}", s.withUser(s.putChapterTranscript))
+	m.HandleFunc("DELETE /api/books/{bookId}/transcript", s.withAdmin(s.deleteTranscript))
+	m.HandleFunc("GET /api/transcripts/search", s.withUser(s.searchTranscripts))
+	m.HandleFunc("GET /api/transcription", s.withUser(s.transcriptionStatus))
+	m.HandleFunc("POST /api/books/{bookId}/transcribe", s.withUser(s.transcribeBook))
+	m.HandleFunc("DELETE /api/books/{bookId}/transcribe", s.withUser(s.cancelBook))
+	m.HandleFunc("POST /api/transcription/library", s.withAdmin(s.transcribeLibrary))
+	m.HandleFunc("DELETE /api/transcription/queue", s.withAdmin(s.clearQueue))
+	m.HandleFunc("PUT /api/settings/transcription", s.withAdmin(s.putTranscribeSettings))
+	m.HandleFunc("POST /api/transcription/models/{id}", s.withAdmin(s.fetchModelHandler))
+	m.HandleFunc("DELETE /api/transcription/models/{id}", s.withAdmin(s.deleteModel))
 	m.HandleFunc("GET /api/stats", s.withUser(s.statsHandler))
 	m.HandleFunc("GET /api/bookmarks", s.withUser(s.allBookmarks))
 	m.HandleFunc("POST /api/bookmarks/{bookId}", s.withUser(s.addBookmark))
@@ -301,7 +317,16 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, user, token stri
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, 200, map[string]any{"ok": true, "protocol": protocolVersion, "name": s.serverName(), "version": serverVersion,
-		"features": []string{"collections", "playlists", "reportedSessions", "oidc"}})
+		"features": s.features()})
+}
+
+// features are the optional extensions this server offers (docs/app-integration.md).
+func (s *server) features() []string {
+	f := []string{"collections", "playlists", "reportedSessions", "oidc", "transcripts"}
+	if s.trans.available() {
+		f = append(f, "transcription")
+	}
+	return f
 }
 
 func (s *server) auth(w http.ResponseWriter, r *http.Request) {

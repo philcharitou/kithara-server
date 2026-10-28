@@ -9,7 +9,7 @@ Detect features rather than assume them. `/api/health` now lists them:
 
 ```json
 { "ok": true, "protocol": 1, "name": "Phil's shelf", "version": "0.6.0",
-  "features": ["collections", "playlists", "reportedSessions", "oidc"] }
+  "features": ["collections", "playlists", "reportedSessions", "oidc", "transcripts", "transcription"] }
 ```
 
 Anything older has no `features`. In that case, a route that answers `404` means the
@@ -212,7 +212,43 @@ provider's subject after the first sign-in. If the provider doesn't know someone
 they get the error "there is no account here for you" unless the admin turned on
 automatic accounts.
 
-## 9. Admin features (optional in the apps)
+## 9. Transcripts
+
+The server keeps transcripts per book, shared by everyone who can see the book. With
+whisper.cpp installed (`transcription` in `features`), it makes them itself, much faster
+than a phone. It stores them in the same shape the app does:
+
+```
+GET /api/books/{bookId}/transcript
+{ "bookId": "…",
+  "chapters": [ { "index": 0, "status": "DONE", "model": "small.en", "engine": "whisper.cpp", "updatedAt": … } ],
+  "passages": [ { "chapterIndex": 0, "startMs": 1200, "endMs": 5400, "text": "…" } ] }
+```
+
+- `passages` map one-to-one onto the app's `TranscriptSegmentEntity`, with times on the
+  book's timeline. `chapters` map onto `TranscriptChapterEntity`: the same `DONE` and
+  `PARTIAL`, and model ids like the app's (`tiny.en`, `base.en`, `small.en`, plus the
+  server's bigger ones). It is gzipped for clients that accept it.
+- **Asking the server to transcribe:** `POST /api/books/{bookId}/transcribe` with
+  `{}` (every chapter not yet done) or `{"chapters": [3]}`. `DELETE` on the same path
+  stops it. `GET /api/transcription` shows `running` (`bookId`, `chapter`, `progress`
+  from 0 to 1) and `queue`. Poll it every few seconds while the book's transcript
+  screen is open.
+- **Sending up a phone's transcript:** `PUT /api/books/{bookId}/transcript/chapters/{index}`
+  with `{ "status", "model", "engine": "sherpa-onnx", "passages": [ { "startMs", "endMs", "text" } ] }`.
+  It replaces that chapter's passages. A chapter that is already `DONE` on the server
+  answers `409` (only an admin may replace it), so check `chapters` first and don't
+  upload over a finished one.
+- `GET /api/transcripts/search?q=…&bookId=…` searches on the server. The app can keep
+  searching locally.
+
+**Pro.** Transcripts are a Pro feature in the app, and the server doesn't check
+anything: it is the user's own machine. Gate it in the app. Without Pro, don't fetch,
+show, upload or request transcripts, and hide the transcript screen for server books.
+The web page offers transcripts to everyone, and that is intended: the server is free,
+and Pro is what brings it into the app.
+
+## 10. Admin features (optional in the apps)
 
 The server's web page does all of this, so the apps don't need it. If you want any of
 it anyway, show it only when `role == "admin"`:
@@ -224,7 +260,7 @@ it anyway, show it only when `role == "admin"`:
 - `GET/POST /api/users` and `PATCH/DELETE /api/users/{name}`.
 - Libraries, uploads, scan problems, settings, backup and activity: see the README.
 
-## 10. Protocol document
+## 11. Protocol document
 
 `docs/kithara-sync-protocol.md` (in the Android repo) and the site copy still describe
 version 1 as it was. Suggested edits, for whoever owns that document:
@@ -247,6 +283,7 @@ version 1 as it was. Suggested edits, for whoever owns that document:
   - signed links
   - collections and playlists
   - single sign-on
+  - transcripts
 
 ---
 
@@ -260,8 +297,10 @@ version 1 as it was. Suggested edits, for whoever owns that document:
 4. Reporting sessions (§6). Then show the server's stats as exact rather than
    estimated.
 5. Collections and playlists (§7).
-6. Single sign-on (§8).
-7. Downloads through the system downloader (§5), if wanted.
+6. Transcripts from the server (§9), for Pro users: fetch and request them, and send
+   up ones made on the phone.
+7. Single sign-on (§8).
+8. Downloads through the system downloader (§5), if wanted.
 
 ### Android (`Kithara-Android`)
 
@@ -279,6 +318,11 @@ version 1 as it was. Suggested edits, for whoever owns that document:
     token), `stats`, `sessions`, `reportSessions`, `collections`, `playlists` (with
     create, update and delete), `oidcInfo`, `oidcExchange`, `downloadLink`. Read
     `features` from `health`.
+- Transcripts (Pro only): for a server book, read `GET /api/books/{id}/transcript`
+  into `TranscriptSegmentEntity` and `TranscriptChapterEntity` where the server has a
+  chapter the phone hasn't. Offer "Transcribe on the server" when `transcription` is
+  in `features`, and show its progress. After `TranscriptionService` finishes a
+  chapter of a server book, `PUT` it up unless the server already has it `DONE`.
 - `source/CustomSyncSource.kt`: carry the new fields into the local book, and the
   library name for the filter. After each listening session ends locally, queue it for
   `POST /api/sessions` with a stable id (a UUID saved with the session).
