@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -27,11 +28,12 @@ type server struct {
 
 	match   *matcher
 	linkKey []byte // signs download links
+	started time.Time
 }
 
 func newServer(st *store, lib *library, name string) *server {
 	s := &server{store: st, lib: lib, name: name, mux: http.NewServeMux(),
-		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher(), linkKey: newLinkKey()}
+		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher(), linkKey: newLinkKey(), started: time.Now()}
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.health)
 	m.HandleFunc("POST /api/auth", s.auth)
@@ -58,6 +60,7 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("POST /api/books/{bookId}/download-link", s.withUser(s.downloadLink))
 
 	m.HandleFunc("GET /api/me", s.withUser(s.me))
+	m.HandleFunc("GET /api/status", s.withUser(s.status))
 	m.HandleFunc("GET /api/devices", s.withUser(s.listDevices))
 	m.HandleFunc("DELETE /api/devices/{id}", s.withUser(s.revokeDevice))
 
@@ -158,6 +161,31 @@ func readBody(r *http.Request, v any) error {
 }
 
 // ------------------------------------------------------------------ routes
+
+// status is the web page's dashboard: the server, its last scan, and for admins how
+// many users and devices it has.
+func (s *server) status(w http.ResponseWriter, r *http.Request, user, token string) {
+	s.lib.mu.RLock()
+	scanAt, scanMs := s.lib.lastScanAt, s.lib.lastScanMs
+	s.lib.mu.RUnlock()
+	out := map[string]any{
+		"name": s.name, "version": serverVersion, "protocol": protocolVersion,
+		"startedAt": s.started.UnixMilli(), "lastScanAt": scanAt, "lastScanMs": scanMs,
+		"books": len(s.lib.catalogueOrEmpty(s.acct(user))),
+	}
+	if a := s.acct(user); a.admin() {
+		devices := 0
+		for _, acc := range s.store.accounts() {
+			devices += acc.Devices
+		}
+		out["users"] = len(s.store.users())
+		out["devices"] = devices
+		out["platform"] = runtime.GOOS + "/" + runtime.GOARCH
+		out["goVersion"] = runtime.Version()
+		out["ffprobe"] = haveFFprobe()
+	}
+	writeJSONResponse(w, 200, out)
+}
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, 200, map[string]any{"ok": true, "protocol": protocolVersion, "name": s.name, "version": serverVersion})

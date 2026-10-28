@@ -350,3 +350,39 @@ func TestStreaks(t *testing.T) {
 		t.Fatalf("a lapsed streak is still current: %d", st.CurrentStreakDays)
 	}
 }
+
+// A book folder holding one file named differently from the folder is a book folder:
+// its folder is the book (not a series), it gets a sidecar, and an id recorded for it
+// by the file's path before 0.4.1 carries over.
+func TestOneFileBookFolder(t *testing.T) {
+	root, data := t.TempDir(), t.TempDir()
+	audio, _ := os.ReadFile(sampleAudio(t))
+	dir := filepath.Join(root, "J. R. R. Tolkien", "The Hobbit")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "hobbit.m4b"), audio, 0o644)
+	os.WriteFile(filepath.Join(dir, "cover.jpg"), []byte("\xff\xd8\xff\xd9"), 0o644)
+	// What an older version recorded: the id under the file's path.
+	writeJSON(filepath.Join(data, "ids.json"), map[string]string{"J. R. R. Tolkien/The Hobbit/hobbit.m4b": "oldhobbit01"})
+
+	lib := newLibrary(root, data)
+	if err := lib.rescan(); err != nil {
+		t.Fatal(err)
+	}
+	books := lib.snapshot().Books
+	if len(books) != 1 {
+		t.Fatalf("want 1 book, got %d", len(books))
+	}
+	b := books[0]
+	if b.Title != "The Hobbit" || b.Author != "J. R. R. Tolkien" || b.Series != "" {
+		t.Fatalf("book: title %q author %q series %q", b.Title, b.Author, b.Series)
+	}
+	if b.ID != "oldhobbit01" {
+		t.Fatalf("id %q, want the one recorded by file path", b.ID)
+	}
+	if side, _ := os.ReadFile(filepath.Join(dir, sidecarName)); strings.TrimSpace(string(side)) != "oldhobbit01" {
+		t.Fatalf("sidecar holds %q", side)
+	}
+	if b.CoverURL == "" || !strings.HasSuffix(b.coverPath, "cover.jpg") {
+		t.Fatalf("folder cover not used: %q", b.coverPath)
+	}
+}

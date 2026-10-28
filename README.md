@@ -33,8 +33,10 @@ your user name and password. The app checks `/api/health`, signs in, and syncs.
 and sign in with the same account. Everyone can browse their libraries, see their
 listening stats, download a book as a zip, and sign out their devices. Admins can also
 rescan, find and edit metadata (with covers), and manage users and their library access.
-It's part of the binary and uses the same API as the apps, and it follows the apps'
-look, light or dark (it follows the system unless you pick one in the top bar).
+It's part of the binary and uses the same API as the apps: a dashboard (server, libraries,
+listening, devices), the library as a table or covers, listening stats, devices, and for
+admins libraries and users. Dark by default, in the apps' colours; the sun in the top bar
+switches to light.
 
 **Adding libraries without restarting.** An admin can add a folder as a library from the
 web page (the folder button in the Library tab's top bar, which opens a picker over the

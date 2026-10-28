@@ -91,6 +91,9 @@ type library struct {
 
 	storedSeen fileStamp // libraries.json as last read
 	storedRead bool
+
+	lastScanAt int64 // when the last scan finished, and how long it took
+	lastScanMs int64
 	probe      *probeCache
 }
 
@@ -260,6 +263,19 @@ func (l *library) catalogueFor(a Account, name string) (catalogueView, bool) {
 	return v, true
 }
 
+// catalogueOrEmpty is the books an account may see.
+func (l *library) catalogueOrEmpty(a Account) []Book {
+	var out []Book
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, b := range l.cat.Books {
+		if a.sees(b.Library) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 // libraries lists the libraries an account may see.
 func (l *library) libraries(a Account) []LibraryInfo {
 	l.mu.RLock()
@@ -377,6 +393,9 @@ func (l *library) rescan() error {
 	l.gen++
 	l.mu.Unlock()
 	l.probe.save()
+	l.mu.Lock()
+	l.lastScanAt, l.lastScanMs = time.Now().UnixMilli(), time.Since(start).Milliseconds()
+	l.mu.Unlock()
 	log.Printf("scanned %d books in %s", len(cat.Books), time.Since(start).Round(time.Millisecond))
 	return errors.Join(errs...)
 }
@@ -411,7 +430,7 @@ func (l *library) scanRoot(r *libRoot) ([]Book, error) {
 	}
 	var books []Book
 	for _, d := range dirs {
-		b, err := l.buildBook(r, d.path, d.files, d.name)
+		b, err := l.buildBook(r, d.path, d.files, d.name, false)
 		if err != nil {
 			log.Printf("skip %s: %v", d.path, err)
 			continue
@@ -419,7 +438,7 @@ func (l *library) scanRoot(r *libRoot) ([]Book, error) {
 		books = append(books, b)
 	}
 	for _, f := range loose {
-		b, err := l.buildBook(r, filepath.Dir(f), []string{f}, strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)))
+		b, err := l.buildBook(r, filepath.Dir(f), []string{f}, strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)), true)
 		if err != nil {
 			log.Printf("skip %s: %v", f, err)
 			continue
@@ -564,9 +583,11 @@ func naturalLess(items []string) func(i, j int) bool {
 }
 
 // buildBook probes the files and assembles one catalogue entry.
-func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitle string) (Book, error) {
-	single := len(files) == 1 && filepath.Dir(files[0]) == dir && !isBookFolder(dir, files[0])
-	id, err := l.idFor(r, dir, files[0], single)
+// A loose book is an audio file sitting beside other books rather than in a folder of
+// its own; its folder belongs to the books around it.
+func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitle string, loose bool) (Book, error) {
+	single := loose
+	id, err := l.idFor(r, dir, files[0], loose)
 	if err != nil {
 		return Book{}, err
 	}
@@ -599,7 +620,7 @@ func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitl
 			b.UpdatedAt = info.ModTime().UnixMilli()
 		}
 		if i == 0 {
-			b.apply(tagMeta(pr.Tags, single))
+			b.apply(tagMeta(pr.Tags, len(files) == 1))
 		}
 		b.Files = append(b.Files, File{
 			Index: i, Name: filepath.Base(path), URL: "/audio/" + id + "/" + strconv.Itoa(i),
@@ -699,13 +720,6 @@ func clampChapters(chs []Chapter, durationMs int64) []Chapter {
 	return out
 }
 
-// isBookFolder: a lone file in a folder named after it is still "a book folder",
-// so the sidecar id can live there.
-func isBookFolder(dir, file string) bool {
-	base := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
-	return strings.EqualFold(filepath.Base(dir), base)
-}
-
 // idFor keeps a book's id with the book: a sidecar file in its folder, so the id
 // survives renames and moves, and a path-keyed record in the data folder as a second
 // copy, so a lost sidecar (a restore from backup, a tidy-up) does not turn the book
@@ -725,7 +739,17 @@ func (l *library) idFor(r *libRoot, dir, firstFile string, loose bool) (string, 
 			return id, nil
 		}
 	}
-	id := l.idByPath(r, key, "")
+	// A one-file book folder was taken for a loose file before 0.4.1 and its id recorded
+	// by the file's path; carry that id over so its listening position stays attached.
+	preferred := ""
+	l.mu.RLock()
+	if _, ok := r.ids[key]; !ok {
+		if fileRel, err := filepath.Rel(r.path, firstFile); err == nil {
+			preferred = r.ids[filepath.ToSlash(fileRel)]
+		}
+	}
+	l.mu.RUnlock()
+	id := l.idByPath(r, key, preferred)
 	if err := os.WriteFile(p, []byte(id+"\n"), 0o644); err != nil {
 		log.Printf("no sidecar in %s (%v); id kept by path", dir, err)
 	}
