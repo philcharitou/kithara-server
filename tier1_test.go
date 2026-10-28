@@ -16,25 +16,27 @@ func TestLoginLimiter(t *testing.T) {
 	l := newLoginLimiter(3, time.Minute)
 	now := time.Unix(1_000_000, 0)
 	for i := 0; i < 3; i++ {
-		if l.retryAfter("k", now) != 0 {
-			t.Fatalf("blocked after %d failures", i)
+		if l.try("k", now.Add(time.Duration(i)*time.Second)) != 0 {
+			t.Fatalf("blocked after %d attempts", i)
 		}
-		l.fail("k", now.Add(time.Duration(i)*time.Second))
 	}
-	if wait := l.retryAfter("k", now.Add(3*time.Second)); wait <= 0 || wait > time.Minute {
-		t.Fatalf("not blocked after 3 failures (wait %s)", wait)
+	if wait := l.try("k", now.Add(3*time.Second)); wait <= 0 || wait > time.Minute {
+		t.Fatalf("not blocked after 3 attempts (wait %s)", wait)
 	}
-	if l.retryAfter("other", now) != 0 {
-		t.Fatal("one key's failures blocked another")
+	if l.try("other", now) != 0 {
+		t.Fatal("one key's attempts blocked another")
 	}
-	// The oldest failure ages out and one more try is allowed.
-	if l.retryAfter("k", now.Add(time.Minute)) != 0 {
+	// A right password takes its attempt back, making room for one more.
+	l.forget("k", now.Add(2*time.Second))
+	if l.try("k", now.Add(3*time.Second)) != 0 {
+		t.Fatal("forget did not take the attempt back")
+	}
+	// The oldest attempt ages out and one more is allowed.
+	if l.try("k", now.Add(time.Minute)) != 0 {
 		t.Fatal("still blocked once the window passed")
 	}
-	// A right password takes its attempt back.
-	l.forget("k", now.Add(2*time.Second))
-	if l.retryAfter("k", now.Add(3*time.Second)) != 0 {
-		t.Fatal("forget did not take the attempt back")
+	if got := limitKey("2001:db8:1:2:aaaa::1"); got != limitKey("2001:db8:1:2:bbbb::9") || got == limitKey("2001:db8:1:3::1") {
+		t.Fatalf("IPv6 addresses not grouped by /64: %s", got)
 	}
 }
 

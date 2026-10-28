@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -397,7 +398,11 @@ func (l *library) publish() error {
 			all = append(all, b)
 		}
 	}
-	sort.SliceStable(all, func(i, j int) bool { return strings.ToLower(all[i].Title) < strings.ToLower(all[j].Title) })
+	keys := make(map[string]string, len(all))
+	for _, b := range all {
+		keys[b.ID] = strings.ToLower(b.Title)
+	}
+	sort.SliceStable(all, func(i, j int) bool { return keys[all[i].ID] < keys[all[j].ID] })
 	cat := Catalogue{Books: all}
 	if cat.Books == nil {
 		cat.Books = []Book{}
@@ -418,6 +423,13 @@ func (l *library) publish() error {
 		byLib[b.Library] = append(byLib[b.Library], b)
 	}
 	for _, r := range l.roots {
+		if len(l.roots) == 1 {
+			// One library: its view is the whole catalogue's, built once.
+			v := everything
+			v.info.Name = r.name
+			views[r.name] = v
+			continue
+		}
 		if views[r.name], err = buildView(r.name, byLib[r.name]); err != nil {
 			return err
 		}
@@ -455,7 +467,7 @@ func (l *library) rebuildBook(id string) error {
 	if old.loose {
 		fallback = strings.TrimSuffix(filepath.Base(files[0]), filepath.Ext(files[0]))
 	}
-	var plain map[string]bool
+	var plain map[string]string
 	if !old.loose {
 		plain = plainFiles(old.dir)
 	}
@@ -544,7 +556,7 @@ type bookDir struct {
 	path  string
 	name  string
 	files []string
-	plain map[string]bool // regular files in the folder (no links), for sidecars and covers
+	plain map[string]string // regular files in the folder (no links), by lowercase name
 }
 
 // findBooks decides what counts as a book: a folder with audio files directly in it,
@@ -554,6 +566,11 @@ func findBooks(root string) ([]bookDir, []string, error) {
 	var dirs []bookDir
 	var loose []string
 	var walk func(dir string, depth int) (bool, error)
+	// The library's real path, once: links in it must resolve inside it.
+	base, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, nil, err
+	}
 	walk = func(dir string, depth int) (bool, error) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -561,18 +578,20 @@ func findBooks(root string) ([]bookDir, []string, error) {
 		}
 		var audio []string
 		var subs []os.DirEntry
-		plain := map[string]bool{}
+		plain := map[string]string{}
 		for _, e := range entries {
 			name := e.Name()
 			if strings.HasPrefix(name, ".") || name == "@eaDir" {
 				continue
 			}
 			if e.Type().IsRegular() {
-				plain[name] = true
+				plain[strings.ToLower(name)] = name
 			}
 			if e.IsDir() {
-				subs = append(subs, e)
-			} else if isAudio(root, dir, e) {
+				if staysInside(base, filepath.Join(dir, name)) {
+					subs = append(subs, e)
+				}
+			} else if isAudio(base, dir, e) {
 				audio = append(audio, filepath.Join(dir, name))
 			}
 		}
@@ -595,7 +614,7 @@ func findBooks(root string) ([]bookDir, []string, error) {
 					sub, _ := os.ReadDir(filepath.Join(dir, n))
 					var part []string
 					for _, e := range sub {
-						if isAudio(root, filepath.Join(dir, n), e) {
+						if isAudio(base, filepath.Join(dir, n), e) {
 							part = append(part, filepath.Join(dir, n, e.Name()))
 						}
 					}
@@ -629,39 +648,63 @@ func findBooks(root string) ([]bookDir, []string, error) {
 		}
 		return childHasBooks, nil
 	}
-	_, err := walk(root, 0)
+	_, err = walk(root, 0)
 	return dirs, loose, err
 }
 
 // isAudio reports whether a folder entry is an audio file to serve. A link counts
-// only when it leads to a file inside the library: one that leads elsewhere (another
-// library, the server's own files) would hand that file to anyone who can see this one.
-func isAudio(root, dir string, e os.DirEntry) bool {
+// only when it leads to a file inside the library (base, its real path): one that leads
+// elsewhere (another library, the server's own files) would hand that file to anyone
+// who can see this one. Windows cloud placeholders (OneDrive files on demand) are
+// neither regular nor links, and count when they stat as files.
+func isAudio(base, dir string, e os.DirEntry) bool {
 	if _, ok := audioExt[strings.ToLower(filepath.Ext(e.Name()))]; !ok {
 		return false
 	}
-	if e.Type().IsRegular() {
+	t := e.Type()
+	switch {
+	case t.IsRegular():
 		return true
+	case t&os.ModeSymlink != 0:
+		target, err := filepath.EvalSymlinks(filepath.Join(dir, e.Name()))
+		if err != nil || !within(target, base) {
+			return false
+		}
+		info, err := os.Stat(target)
+		return err == nil && info.Mode().IsRegular()
+	case t&os.ModeIrregular != 0:
+		info, err := os.Stat(filepath.Join(dir, e.Name()))
+		return err == nil && info.Mode().IsRegular()
 	}
-	if e.Type()&os.ModeSymlink == 0 {
-		return false
-	}
-	target, err1 := filepath.EvalSymlinks(filepath.Join(dir, e.Name()))
-	base, err2 := filepath.EvalSymlinks(root)
-	if err1 != nil || err2 != nil || !within(target, base) {
-		return false
-	}
-	info, err := os.Stat(target)
-	return err == nil && info.Mode().IsRegular()
+	return false
 }
 
-// plainFiles lists the regular files (not links or folders) in a folder.
-func plainFiles(dir string) map[string]bool {
+// staysInside reports whether a subfolder is really inside the library. A linked
+// folder is not walked at all on most systems (it is not listed as a folder); a
+// Windows junction is, so there the folder's real path is checked.
+func staysInside(base, dir string) bool {
+	if runtime.GOOS != "windows" {
+		return true
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return false
+	}
+	if info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
+		return true
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	return err == nil && within(real, base)
+}
+
+// plainFiles lists the regular files (not links or folders) in a folder, by lowercase
+// name.
+func plainFiles(dir string) map[string]string {
 	entries, _ := os.ReadDir(dir)
-	out := map[string]bool{}
+	out := map[string]string{}
 	for _, e := range entries {
 		if e.Type().IsRegular() {
-			out[e.Name()] = true
+			out[strings.ToLower(e.Name())] = e.Name()
 		}
 	}
 	return out
@@ -739,7 +782,7 @@ func (l *library) probeAll(paths []string) {
 // its own; its folder belongs to the books around it.
 // plain lists the regular files in a book folder (from the scan's own listing), so
 // sidecars and covers are looked for without a stat per candidate name.
-func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitle string, loose bool, plain map[string]bool) (Book, error) {
+func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitle string, loose bool, plain map[string]string) (Book, error) {
 	id, err := l.idFor(r, dir, files[0], loose)
 	if err != nil {
 		return Book{}, err
@@ -838,10 +881,11 @@ func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitl
 	}
 	if !loose && b.coverPath == "" {
 		for _, n := range coverName {
-			if !plain[n] {
+			name := plain[n] // coverName is lowercase; the folder may say Folder.jpg
+			if name == "" {
 				continue
 			}
-			p := filepath.Join(dir, n)
+			p := filepath.Join(dir, name)
 			if info, err := os.Stat(p); err == nil {
 				b.coverPath = p
 				if info.ModTime().UnixMilli() > b.UpdatedAt {
@@ -969,7 +1013,9 @@ func (l *library) extractCover(id, file string) string {
 		return ""
 	}
 	_ = os.MkdirAll(dir, 0o755)
-	cmd := exec.Command("ffmpeg", "-y", "-v", "quiet", "-protocol_whitelist", "file", "-i", file,
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-v", "quiet", "-protocol_whitelist", "file", "-i", file,
 		"-an", "-map", "0:v:0", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "3", out)
 	if err := cmd.Run(); err == nil {
 		if info, err := os.Stat(out); err == nil && info.Size() > 0 {
@@ -1082,7 +1128,9 @@ func init() {
 func ffprobe(path string) (probeResult, error) {
 	var out bytes.Buffer
 	// Local files only: a crafted "audio" file must not make ffprobe fetch anything.
-	cmd := exec.Command("ffprobe", "-v", "quiet", "-protocol_whitelist", "file", "-print_format", "json", "-show_format", "-show_chapters", path)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "quiet", "-protocol_whitelist", "file", "-print_format", "json", "-show_format", "-show_chapters", path)
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		return probeResult{}, fmt.Errorf("ffprobe: %w", err)

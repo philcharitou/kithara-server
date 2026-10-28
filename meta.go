@@ -136,16 +136,17 @@ func folderMeta(name string, above []string) bookMeta {
 // sidecarMeta reads the metadata files kept in a book's folder, weakest first, and
 // returns them merged along with the newest modification time among them, so editing
 // one moves the book's updatedAt.
-func sidecarMeta(dir string, plain map[string]bool) (bookMeta, int64) {
+func sidecarMeta(dir string, plain map[string]string) (bookMeta, int64) {
 	var m bookMeta
 	var newest int64
 	// Only regular files the folder listing showed: no links (which could lead to the
 	// server's own files and show them as a description), no folders.
 	read := func(name string) []byte {
-		if !plain[name] {
+		real := plain[strings.ToLower(name)] // Desc.txt and Metadata.OPF count too
+		if real == "" {
 			return nil
 		}
-		p := filepath.Join(dir, name)
+		p := filepath.Join(dir, real)
 		info, err := os.Stat(p)
 		if err != nil || info.IsDir() || info.Size() > 4<<20 {
 			return nil
@@ -190,13 +191,13 @@ func merge(dst *bookMeta, src bookMeta) {
 }
 
 // findOPF prefers metadata.opf, else the only .opf in the folder.
-func findOPF(plain map[string]bool) string {
-	if plain["metadata.opf"] {
-		return "metadata.opf"
+func findOPF(plain map[string]string) string {
+	if name := plain["metadata.opf"]; name != "" {
+		return name
 	}
 	found := ""
-	for name := range plain {
-		if strings.EqualFold(filepath.Ext(name), ".opf") {
+	for lower, name := range plain {
+		if strings.HasSuffix(lower, ".opf") {
 			if found != "" {
 				return ""
 			}

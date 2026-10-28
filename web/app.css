@@ -348,8 +348,11 @@ body.playing .page { padding-bottom: 96px; }
 /* the timeline: played part in the apps' gradient, the thumb gold */
 input.scrub { -webkit-appearance: none; appearance: none; width: 100%; height: 18px; background: transparent; padding: 0; border: 0; box-shadow: none; margin: 0; }
 input.scrub:focus { box-shadow: none; border: 0; }
-input.scrub::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--deep), var(--mid) calc(var(--fill, 0%) * .6), var(--glint) var(--fill, 0%), var(--track) var(--fill, 0%)); }
-input.scrub::-moz-range-track { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--deep), var(--mid) calc(var(--fill, 0%) * .6), var(--glint) var(--fill, 0%), var(--track) var(--fill, 0%)); }
+/* The thumb (8px) travels the track minus its own width, so the fill ends at its centre:
+   4px plus that travel times the played fraction (--p, 0 to 1, set by the player). */
+input.scrub { --at: calc(4px + (100% - 8px) * var(--p, 0)); }
+input.scrub::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--deep), var(--mid) calc(var(--at) * .6), var(--glint) var(--at), var(--track) var(--at)); }
+input.scrub::-moz-range-track { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--deep), var(--mid) calc(var(--at) * .6), var(--glint) var(--at), var(--track) var(--at)); }
 input.scrub::-webkit-slider-thumb { -webkit-appearance: none; width: 8px; height: 18px; border-radius: 3px; background: var(--glint); margin-top: -6px; border: 0; }
 input.scrub::-moz-range-thumb { width: 8px; height: 18px; border-radius: 3px; background: var(--glint); border: 0; }
 

@@ -19,6 +19,7 @@ const state = {
   view: "dashboard",
   prefs: { layout: "table", sort: "title", filter: "all", library: "", theme: "dark", group: "books" },
   loadedAt: 0, // when the catalogue was last fetched
+  gen: 0, // bumped when the user changes; answers for an older one are dropped
 };
 
 // ------------------------------------------------------------------ helpers
@@ -142,6 +143,7 @@ function applyTheme() {
 // resetCaches forgets what was loaded for the signed-in user, so the next one (after a
 // sign-out, or signing in as someone else) never sees it.
 function resetCaches() {
+  state.gen++;
   state.books = [];
   state.libraries = [];
   state.progress = new Map();
@@ -152,7 +154,6 @@ function resetCaches() {
 }
 
 function saveToken(token, remember) {
-  if (token !== state.token) resetCaches();
   state.token = token;
   try {
     sessionStorage.setItem(TOKEN_KEY, token);
@@ -293,6 +294,7 @@ function renderSignIn(message = "") {
       err.textContent = "";
       try {
         const out = await api("/api/auth", { method: "POST", body: { username: user.value, password: pass.value, device: browserName() } });
+        resetCaches();
         saveToken(out.token, remember.checked);
         await start();
       } catch (e) {
@@ -446,7 +448,9 @@ function kv(pairs) {
 // the last minute or something changed it (state.loadedAt = 0).
 async function loadLibrary() {
   const fresh = Date.now() - state.loadedAt < 60000;
+  const gen = state.gen;
   const [cat, prog, libs] = await Promise.all([fresh ? null : api("/api/library"), api("/api/progress"), fresh ? null : api("/api/libraries")]);
+  if (gen !== state.gen) return; // signed out meanwhile
   if (cat) {
     state.books = cat.books;
     state.libraries = libs.libraries;
@@ -463,7 +467,7 @@ function progressOf(b) {
 }
 
 function statusOf(b) {
-  const p = progressOf(b);
+  const p = state.progress.get(b.id);
   if (p?.finished) return "finished";
   if (p && p.positionMs > 0) return "progress";
   return "new";
@@ -607,9 +611,15 @@ function donut(slices, center, caption) {
 // ------------------------------------------------------------------ library
 
 // matches reports whether a book has every word of the search (already lowercased).
+// Each book's searchable text is worked out once and kept with the book object.
+const hayCache = new WeakMap();
 function matches(b, words) {
   if (!words.length) return true;
-  const hay = [b.title, b.subtitle, b.author, b.narrator, b.series, ...(b.genres || [])].join(" ").toLowerCase();
+  let hay = hayCache.get(b);
+  if (hay === undefined) {
+    hay = [b.title, b.subtitle, b.author, b.narrator, b.series, ...(b.genres || [])].join(" ").toLowerCase();
+    hayCache.set(b, hay);
+  }
   return words.every((w) => hay.includes(w));
 }
 
@@ -657,9 +667,9 @@ async function viewLibrary(tools) {
     }
     if (prefs.group === "series" || prefs.group === "authors") return shelf.replaceChildren(groupedShelf(shown, prefs.group));
     const page = shown.slice(0, limit);
-    shelf.replaceChildren(prefs.layout === "grid" ? el("div", { class: "cover-grid" }, page.map(bookTile)) : bookTable(page),
+    shelf.replaceChildren(...[prefs.layout === "grid" ? el("div", { class: "cover-grid" }, page.map(bookTile)) : bookTable(page),
       shown.length > limit ? el("div", { class: "row", style: "justify-content:center;margin-top:12px" },
-        el("button", { class: "btn secondary", type: "button", onclick: () => { limit += PAGE; fill(); } }, `Show ${Math.min(PAGE, shown.length - limit)} more of ${shown.length - limit}`)) : null);
+        el("button", { class: "btn secondary", type: "button", onclick: () => { limit += PAGE; fill(); } }, `Show ${Math.min(PAGE, shown.length - limit)} more of ${shown.length - limit}`)) : null].filter(Boolean));
   };
 
   const filters = el("div", { class: "chips", role: "group", "aria-label": "Show" });
@@ -1044,9 +1054,8 @@ async function viewDevices(tools, who = state.me.name) {
 async function viewLibraries(tools) {
   const { libraries: libs } = await api("/api/libraries");
   state.libraries = libs;
-  tools.append(
-    libs.length ? el("button", { class: "btn secondary small", type: "button", onclick: () => uploadSheet(libs[0].name) }, icon("upload"), "Upload") : null,
-    el("button", { class: "btn small", type: "button", onclick: () => addLibrarySheet() }, icon("add"), "Add library"));
+  if (libs.length) tools.append(el("button", { class: "btn secondary small", type: "button", onclick: () => uploadSheet(libs[0].name) }, icon("upload"), "Upload"));
+  tools.append(el("button", { class: "btn small", type: "button", onclick: () => addLibrarySheet() }, icon("add"), "Add library"));
   const remove = async (l) => {
     if (!confirm(`Remove ${l.name}? Its books disappear from the server and every device. The files stay where they are, and adding the folder back brings the books and everyone's places back.`)) return;
     try {
@@ -1302,7 +1311,15 @@ player.audio.addEventListener("ended", () => {
   }
 });
 player.audio.addEventListener("pause", () => { if (!player.audio.ended) saveProgress(); drawPlayer(); });
-player.audio.addEventListener("play", () => drawPlayer());
+player.audio.addEventListener("play", () => { drawPlayer(); requestAnimationFrame(playerFrame); });
+
+// playerFrame moves the timeline every frame while playing; the audio element itself
+// only reports its time a few times a second, which made the playhead hop.
+function playerFrame() {
+  if (!player.book || player.audio.paused) return;
+  updatePlayerTime();
+  requestAnimationFrame(playerFrame);
+}
 player.audio.addEventListener("error", () => { if (player.book) toast("This file could not be played in the browser"); });
 player.audio.addEventListener("timeupdate", () => {
   if (!player.book) return;
@@ -1353,7 +1370,7 @@ function drawPlayer() {
   document.body.classList.toggle("playing", !!player.book);
   const b = player.book;
   if (!b) { player.bar.replaceChildren(); return; }
-  const scrub = el("input", { type: "range", class: "scrub", min: 0, max: b.durationMs, step: 1000, value: playerPosition(), "aria-label": "Position",
+  const scrub = el("input", { type: "range", class: "scrub", min: 0, max: b.durationMs, step: "any", value: playerPosition(), "aria-label": "Position",
     oninput: (e) => { scrub.dataset.dragging = "1"; times.firstChild.textContent = fmtClock(Number(e.target.value)); },
     onchange: (e) => { delete scrub.dataset.dragging; seekTo(Number(e.target.value)); } });
   const times = el("div", { class: "times tiny muted" }, span("", ""), span("", ""));
@@ -1394,7 +1411,7 @@ function updatePlayerTime() {
   if (!b || !player.scrub) return;
   const pos = playerPosition();
   if (!player.scrub.dataset.dragging) player.scrub.value = pos;
-  player.scrub.style.setProperty("--fill", ((pos / b.durationMs) * 100).toFixed(2) + "%");
+  player.scrub.style.setProperty("--p", (pos / b.durationMs).toFixed(5)); // the CSS puts the fill under the thumb
   player.times.firstChild.textContent = fmtClock(pos);
   player.times.lastChild.textContent = "-" + fmtClock(b.durationMs - pos);
   const i = currentChapterAt(b, pos);
@@ -1418,7 +1435,12 @@ async function setProgress(b, finished) {
 
 let bookmarkCache = null;
 async function bookmarksFor(bookId) {
-  if (!bookmarkCache) bookmarkCache = (await api("/api/bookmarks")).bookmarks;
+  if (!bookmarkCache) {
+    const gen = state.gen;
+    const list = (await api("/api/bookmarks")).bookmarks;
+    if (gen !== state.gen) return [];
+    bookmarkCache = list;
+  }
   return bookmarkCache.filter((m) => m.bookId === bookId).sort((a, c) => a.positionMs - c.positionMs);
 }
 

@@ -8,61 +8,44 @@ import (
 	"time"
 )
 
-// loginLimiter counts failed sign-ins per key (a client address, a user name) over a
-// sliding window. Past the limit, sign-ins for that key are refused with 429 until the
-// oldest failure ages out. Tokens already issued keep working throughout, so a stranger
-// hammering one account cannot sign its owner's devices out.
+// loginLimiter counts password attempts per key (a client address, a user name) over a
+// sliding window; a right password takes its attempt back, so what remains are the
+// failures. Past the limit, attempts for that key are refused with 429 until the oldest
+// ages out. Tokens already issued keep working throughout, so a stranger hammering one
+// account cannot sign its owner's devices out.
 type loginLimiter struct {
 	window time.Duration
 	max    int
 
-	mu    sync.Mutex
-	fails map[string][]time.Time
+	mu        sync.Mutex
+	fails     map[string][]time.Time
+	lastSweep time.Time
 }
 
 func newLoginLimiter(max int, window time.Duration) *loginLimiter {
 	return &loginLimiter{window: window, max: max, fails: map[string][]time.Time{}}
 }
 
-// retryAfter is how long key must wait before trying again, or 0 when it may try now.
-func (l *loginLimiter) retryAfter(key string, now time.Time) time.Duration {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	recent := l.prune(key, now)
-	if len(recent) < l.max {
-		return 0
-	}
-	return recent[len(recent)-l.max].Add(l.window).Sub(now)
-}
-
-// try counts an attempt for key unless key is over the limit, in one step, so a burst
-// of parallel attempts cannot all pass the check before any is counted. It returns
-// how long to wait (and counts nothing) when over the limit.
+// try counts an attempt for key unless key is over the limit, all under one lock, so a
+// burst of parallel attempts cannot pass the check before any is counted. Over the limit
+// it counts nothing and returns how long to wait.
 func (l *loginLimiter) try(key string, now time.Time) time.Duration {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	recent := l.prune(key, now)
 	if len(recent) >= l.max {
-		wait := recent[len(recent)-l.max].Add(l.window).Sub(now)
-		l.mu.Unlock()
-		return wait
+		return recent[len(recent)-l.max].Add(l.window).Sub(now)
 	}
-	l.mu.Unlock()
-	l.fail(key, now)
-	return 0
-}
-
-func (l *loginLimiter) fail(key string, now time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.fails[key] = append(l.prune(key, now), now)
-	// Keep the table from growing without bound under a spray of addresses.
-	if len(l.fails) > 10000 {
+	l.fails[key] = append(recent, now)
+	// Keep the table from growing without bound under a spray of addresses, sweeping at
+	// most once a minute so a spray cannot make every attempt walk the whole table.
+	if len(l.fails) > 10000 && now.Sub(l.lastSweep) > time.Minute {
+		l.lastSweep = now
 		for k := range l.fails {
-			if len(l.prune(k, now)) == 0 {
-				delete(l.fails, k)
-			}
+			l.prune(k, now)
 		}
 	}
+	return 0
 }
 
 // forget takes back the attempt counted at t (it turned out to be right).
@@ -81,7 +64,7 @@ func (l *loginLimiter) forget(key string, t time.Time) {
 	}
 }
 
-// prune drops failures older than the window; the caller holds mu.
+// prune drops attempts older than the window; the caller holds mu.
 func (l *loginLimiter) prune(key string, now time.Time) []time.Time {
 	list := l.fails[key]
 	cut := 0
@@ -118,4 +101,13 @@ func clientIP(r *http.Request, trustProxy bool) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// limitKey is the address an attempt counts against: IPv6 clients by their /64 network,
+// since one subscriber gets a whole /64 and could otherwise try from endless addresses.
+func limitKey(ip string) string {
+	if a := net.ParseIP(ip); a != nil && a.To4() == nil {
+		return a.Mask(net.CIDRMask(64, 128)).String() + "/64"
+	}
+	return ip
 }

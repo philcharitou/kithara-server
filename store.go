@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"log"
@@ -234,7 +235,7 @@ func (s *store) allBookmarks(user string) ([]Bookmark, error) {
 	return list, nil
 }
 
-const maxBookmarks = 10000
+const maxBookmarks = 2000
 
 var errTooManyBookmarks = errors.New("too many bookmarks; delete some first")
 
@@ -263,7 +264,7 @@ func (s *store) addBookmark(user string, b Bookmark) (Bookmark, error) {
 		return Bookmark{}, errTooManyBookmarks
 	}
 	b.ID = "bm_" + newID()
-	b.Label = clip(b.Label, 500)
+	b.Label = clip(b.Label, 200)
 	if b.CreatedAt == 0 {
 		b.CreatedAt = time.Now().UnixMilli()
 	}
@@ -310,21 +311,26 @@ func readJSON(path string, v any) error {
 }
 
 func writeJSON(path string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeAtomic(path, data)
+	return writeJSONFile(path, v, "  ")
 }
 
 // writeJSONCompact is writeJSON without the indentation, for the large files only the
 // server reads (the probe cache, listening sessions).
 func writeJSONCompact(path string, v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
+	return writeJSONFile(path, v, "")
+}
+
+// writeJSONFile writes v as JSON without HTML escaping: these files are never HTML,
+// and escaping turns each < in a label into six bytes.
+func writeJSONFile(path string, v any, indent string) error {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", indent)
+	if err := enc.Encode(v); err != nil {
 		return err
 	}
-	return writeAtomic(path, data)
+	return writeAtomic(path, buf.Bytes())
 }
 
 // writeAtomic writes to a temporary file and renames it into place, so a crash

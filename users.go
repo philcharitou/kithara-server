@@ -148,6 +148,19 @@ func (s *store) account(name string) (Account, bool) {
 func (s *store) accountQuick(name string) Account {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.roleLocked(name)
+}
+
+// exists reports whether there is such a user, from a fresh read of the users file.
+func (s *store) exists(name string) bool {
+	s.lockFresh()
+	defer s.mu.Unlock()
+	_, ok := s.userDB[name]
+	return ok
+}
+
+// roleLocked is a user's account without the device count; the caller holds s.mu.
+func (s *store) roleLocked(name string) Account {
 	rec := s.userDB[name]
 	a := Account{Name: name, Role: rec.Role, Libraries: rec.Libraries}
 	if a.Role == "" {
@@ -157,11 +170,7 @@ func (s *store) accountQuick(name string) Account {
 }
 
 func (s *store) accountLocked(name string) Account {
-	rec := s.userDB[name]
-	a := Account{Name: name, Role: rec.Role, Libraries: rec.Libraries}
-	if a.Role == "" {
-		a.Role = roleUser
-	}
+	a := s.roleLocked(name)
 	for _, t := range s.tokens {
 		if t.User == name {
 			a.Devices++
@@ -284,7 +293,9 @@ func (s *store) removeUser(name string) error {
 	if err := s.saveUsers(); err != nil {
 		return err
 	}
-	// The listening state is small and precious; keep it aside rather than delete it.
+	// The listening state is small and precious; keep it aside rather than delete it
+	// (once any write to it in progress is done).
+	defer s.lockUser(name)()
 	old := filepath.Join(s.dir, "users", name)
 	if _, err := os.Stat(old); err == nil {
 		_ = os.Rename(old, old+".removed-"+time.Now().Format("20060102-150405"))
@@ -353,7 +364,7 @@ func (s *store) issueToken(user, device string) (string, error) {
 			delete(s.tokens, t)
 		}
 	}
-	s.tokens[token] = tokenRecord{User: user, Device: clip(device, 100), CreatedAt: now, LastSeenAt: now}
+	s.tokens[token] = tokenRecord{User: user, Device: clip(device, 64), CreatedAt: now, LastSeenAt: now}
 	return token, s.saveTokens()
 }
 

@@ -39,7 +39,7 @@ func (s *server) signedOr(purpose string, h userHandler) http.HandlerFunc {
 		exp, err := strconv.ParseInt(q.Get("exp"), 10, 64)
 		want := s.linkSig(user, purpose, r.PathValue("bookId"), exp)
 		// The user must still exist; the handler checks they may still see the book.
-		_, exists := s.store.account(user)
+		exists := s.store.exists(user)
 		if err != nil || !exists || time.Now().Unix() > exp || subtle.ConstantTimeCompare([]byte(want), []byte(q.Get("sig"))) != 1 {
 			writeError(w, http.StatusForbidden, "this link is not valid or has expired")
 			return
@@ -124,6 +124,7 @@ func uploadable(name string) bool {
 // are made as needed). The body is the file itself. Existing files are kept unless
 // ?overwrite=1. The caller rescans when a batch is done.
 func (s *server) upload(w http.ResponseWriter, r *http.Request, user, token string) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Time{}) // an admin: as long as it takes
 	root, ok := s.lib.catalogueRoot(r.PathValue("name"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "no such library")
@@ -164,6 +165,13 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user, token stri
 		writeError(w, http.StatusInternalServerError, "cannot make the folder: "+err.Error())
 		return
 	}
+	// A linked folder inside the library must not lead the file somewhere else.
+	realDir, err1 := filepath.EvalSymlinks(filepath.Dir(dst))
+	realRoot, err2 := filepath.EvalSymlinks(root.path)
+	if err1 != nil || err2 != nil || !within(realDir, realRoot) {
+		writeError(w, http.StatusBadRequest, "that path leads outside the library")
+		return
+	}
 	tmp := dst + ".kithara-upload"
 	f, err := os.Create(tmp)
 	if err != nil {
@@ -192,6 +200,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user, token stri
 
 // putCover keeps an uploaded picture as the book's cover, beside its saved metadata.
 func (s *server) putCover(w http.ResponseWriter, r *http.Request, user, token string) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(5 * time.Minute)) // an admin
 	id := r.PathValue("bookId")
 	if s.bookOr404(w, r, user) == nil {
 		return
@@ -306,6 +315,8 @@ func (s *server) problems(w http.ResponseWriter, r *http.Request, user, token st
 
 // ------------------------------------------------------------------ settings (admin)
 
+const maxRescanMinutes = 7 * 24 * 60 // a week
+
 // Settings an admin can change from the web page, kept in settings.json. Each falls
 // back to the command line's value when unset.
 type Settings struct {
@@ -381,7 +392,7 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, user, token
 		writeError(w, http.StatusBadRequest, "the name is up to 80 characters")
 		return
 	}
-	if in.RescanMinutes != nil && (*in.RescanMinutes < 0 || *in.RescanMinutes > 7*24*60) {
+	if in.RescanMinutes != nil && (*in.RescanMinutes < 0 || *in.RescanMinutes > maxRescanMinutes) {
 		writeError(w, http.StatusBadRequest, "rescan every 0 (never) to 10080 minutes")
 		return
 	}
@@ -502,7 +513,7 @@ func (s *server) loadSettings(name string, interval time.Duration) {
 	// The file may have been edited by hand: keep it within what the page allows.
 	saved := &s.settings.saved
 	saved.Name = clip(strings.TrimSpace(saved.Name), 80)
-	if m := saved.RescanMinutes; m != nil && (*m < 0 || *m > 7*24*60) {
+	if m := saved.RescanMinutes; m != nil && (*m < 0 || *m > maxRescanMinutes) {
 		log.Printf("settings.json: ignoring rescanMinutes %d", *m)
 		saved.RescanMinutes = nil
 	}

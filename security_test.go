@@ -93,7 +93,7 @@ func TestStoredSizesAreCapped(t *testing.T) {
 	_, body = call(t, ts, "POST", "/api/bookmarks/"+b.ID, token, Bookmark{PositionMs: 1, Label: long, CreatedAt: 1})
 	var m Bookmark
 	json.Unmarshal(body, &m)
-	if len([]rune(m.Label)) != 500 {
+	if len([]rune(m.Label)) != 200 {
 		t.Fatalf("bookmark label kept at %d characters", len(m.Label))
 	}
 	// Signing in again and again keeps at most maxDevices devices.

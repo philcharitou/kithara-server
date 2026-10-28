@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +26,7 @@ type server struct {
 	// forgetful owner) before both stop for a while.
 	ipLimit, userLimit *loginLimiter
 	authSlots          chan struct{} // password checks running at once (each is PBKDF2)
+	authWaiting        atomic.Int32  // and waiting for a slot
 	trustProxy         bool          // take the client address from X-Forwarded-For
 
 	match    *matcher
@@ -99,9 +101,10 @@ func newServer(st *store, lib *library, name string) *server {
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	// Request bodies are small JSON, except uploads, which take as long as they take;
-	// a client cannot hold a connection open by sending one byte at a time.
-	if r.Method != "GET" && r.Method != "HEAD" && !strings.HasSuffix(r.URL.Path, "/files") && !strings.HasSuffix(r.URL.Path, "/cover") {
+	// Request bodies are small JSON, so a client cannot hold a connection open by
+	// sending one byte at a time. Uploads lift this once the admin check has passed.
+	// (Not for plain GETs: a read deadline there would cut long audio streams.)
+	if r.Method != "GET" && r.Method != "HEAD" || r.ContentLength != 0 {
 		_ = http.NewResponseController(w).SetReadDeadline(start.Add(30 * time.Second))
 	}
 	rec := &statusRecorder{ResponseWriter: w, status: 200}
@@ -115,6 +118,9 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status int
 }
+
+// Unwrap lets http.ResponseController reach the connection beneath.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
@@ -157,6 +163,9 @@ func (s *server) withAdmin(h userHandler) http.HandlerFunc {
 	})
 }
 
+// maxAuthWaiting is how many password checks may queue for a slot.
+const maxAuthWaiting = 64
+
 // passwordAttempt checks a password the careful way: the attempt is counted against
 // the client's address and the account before the (deliberately slow) check, so
 // parallel guesses cannot slip under the limit, and a right password takes it back.
@@ -164,7 +173,7 @@ func (s *server) withAdmin(h userHandler) http.HandlerFunc {
 // up while waiting, it answers the request itself and returns answered.
 func (s *server) passwordAttempt(w http.ResponseWriter, r *http.Request, user, password string) (ok, answered bool) {
 	now := time.Now()
-	ipKey, userKey := "ip:"+clientIP(r, s.trustProxy), "user:"+clip(strings.ToLower(user), 64)
+	ipKey, userKey := "ip:"+limitKey(clientIP(r, s.trustProxy)), "user:"+clip(strings.ToLower(user), 64)
 	if wait := s.ipLimit.try(ipKey, now); wait > 0 {
 		tooMany(w, wait, "too many failed attempts; try again later")
 		return false, true
@@ -174,9 +183,18 @@ func (s *server) passwordAttempt(w http.ResponseWriter, r *http.Request, user, p
 		tooMany(w, wait, "too many failed attempts; try again later")
 		return false, true
 	}
+	// A flood of checks waits its turn, but only so many at once: past that, refuse.
+	if s.authWaiting.Add(1) > maxAuthWaiting {
+		s.authWaiting.Add(-1)
+		writeError(w, http.StatusServiceUnavailable, "busy; try again in a moment")
+		return false, true
+	}
 	select {
 	case s.authSlots <- struct{}{}:
+		s.authWaiting.Add(-1)
 	case <-r.Context().Done():
+		s.authWaiting.Add(-1)
+		writeError(w, http.StatusServiceUnavailable, "busy; try again in a moment")
 		return false, true
 	}
 	ok = s.store.checkPassword(user, password)
@@ -211,6 +229,8 @@ func (s *server) acct(user string) Account {
 }
 
 func writeJSONResponse(w http.ResponseWriter, status int, v any) {
+	// A client that never reads the answer cannot hold it in memory forever.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Minute))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)

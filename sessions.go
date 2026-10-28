@@ -61,7 +61,7 @@ func (s *store) sessionsPath(user string) string {
 }
 
 // maxSessions is how many sessions a user's history keeps; older ones drop off.
-const maxSessions = 20000
+const maxSessions = 5000
 
 // recordListening adds the stretch between prev and next to the user's sessions. The
 // caller holds the user's lock.

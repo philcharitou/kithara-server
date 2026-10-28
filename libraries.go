@@ -85,6 +85,13 @@ func (l *library) checkLibraryFolder(path string) (string, error) {
 	if _, err := os.ReadDir(path); err != nil {
 		return "", fmt.Errorf("the server cannot read %s: %w", path, err)
 	}
+	// Not the server's own data, and nothing that holds it, nor a whole home folder or
+	// disk: uploads write into a library.
+	data, _ := filepath.Abs(l.dataDir)
+	home, _ := os.UserHomeDir()
+	if within(path, data) || within(data, path) || path == home || filepath.Dir(path) == path {
+		return "", fmt.Errorf("%s cannot be a library: choose the folder that holds your audiobooks", path)
+	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	for _, r := range l.roots {

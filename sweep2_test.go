@@ -146,3 +146,34 @@ func TestSettingsValidatedOnLoad(t *testing.T) {
 		t.Fatalf("rescan every %s", got)
 	}
 }
+
+// Sidecars and covers are found whatever their capitals, as on Windows and macOS.
+func TestSidecarNamesAnyCase(t *testing.T) {
+	root, data := t.TempDir(), t.TempDir()
+	audio, _ := os.ReadFile(sampleAudio(t))
+	dir := filepath.Join(root, "Book")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "book.m4b"), audio, 0o644)
+	os.WriteFile(filepath.Join(dir, "Folder.JPG"), []byte("\xff\xd8\xff\xd9"), 0o644)
+	os.WriteFile(filepath.Join(dir, "Metadata.OPF"), []byte(`<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>From the OPF</dc:title></metadata></package>`), 0o644)
+	lib := newLibrary(root, data)
+	if err := lib.rescan(); err != nil {
+		t.Fatal(err)
+	}
+	b := lib.snapshot().Books[0]
+	if b.Title != "From the OPF" || !strings.HasSuffix(lib.book(b.ID).coverPath, "Folder.JPG") {
+		t.Fatalf("title %q, cover %q", b.Title, lib.book(b.ID).coverPath)
+	}
+}
+
+// A library cannot be (or hold) the server's own data folder, nor a whole disk.
+func TestLibraryFolderLimits(t *testing.T) {
+	data := t.TempDir()
+	lib := newLibrary(t.TempDir(), data)
+	for _, bad := range []string{data, filepath.Join(data, "users"), filepath.Dir(data), string(filepath.Separator)} {
+		os.MkdirAll(bad, 0o755)
+		if _, err := lib.checkLibraryFolder(bad); err == nil {
+			t.Errorf("%s accepted as a library", bad)
+		}
+	}
+}
