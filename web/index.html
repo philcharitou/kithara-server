@@ -2,15 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#2a1f55">
 <title>Kithara server</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="app.css">
 <script type="module" src="app.js"></script>
 </head>
 <body>
 <div id="app"><p class="boot">Loading…</p></div>
-<dialog id="book"></dialog>
+<dialog id="book" aria-label="Book"></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
