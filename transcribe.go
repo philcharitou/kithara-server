@@ -100,6 +100,7 @@ type transcriber struct {
 	queue     []transcribeJob // the first is the one running, if any
 	running   bool
 	progress  float64 // of the running job, 0 to 1
+	startedAt int64   // when it began (ms)
 	cancel    context.CancelFunc
 	lastError string
 	downloads map[string]*modelDownload
@@ -306,7 +307,7 @@ func (t *transcriber) next() (transcribeJob, context.Context) {
 			if len(t.queue) > 0 {
 				j := t.queue[0]
 				ctx, cancel := context.WithCancel(context.Background())
-				t.running, t.progress, t.cancel = true, 0, cancel
+				t.running, t.progress, t.cancel, t.startedAt = true, 0, cancel, time.Now().UnixMilli()
 				t.mu.Unlock()
 				return j, ctx
 			}
@@ -734,7 +735,8 @@ type TranscriptionStatus struct {
 	Settings  TranscribeSettings        `json:"settings"`
 	Ready     bool                      `json:"ready"` // the chosen model is downloaded
 	Running   *RunningJob               `json:"running,omitempty"`
-	Queue     []transcribeJob           `json:"queue"`
+	Queue     []transcribeJob           `json:"queue"`   // the first 500 waiting
+	Waiting   []WaitingBook             `json:"waiting"` // all of them, by book, in queue order
 	Models    []ModelState              `json:"models,omitempty"`
 	LastError string                    `json:"lastError,omitempty"`
 	Downloads map[string]*modelDownload `json:"downloads,omitempty"`
@@ -742,7 +744,17 @@ type TranscriptionStatus struct {
 
 type RunningJob struct {
 	transcribeJob
-	Progress float64 `json:"progress"`
+	Progress  float64 `json:"progress"`
+	StartedAt int64   `json:"startedAt"`
+	Mine      bool    `json:"mine,omitempty"` // queued by the asker, who may stop it
+}
+
+// WaitingBook is a book's chapters waiting their turn; mine of them were queued by
+// the asker.
+type WaitingBook struct {
+	BookID   string `json:"bookId"`
+	Chapters int    `json:"chapters"`
+	Mine     int    `json:"mine,omitempty"`
 }
 
 type ModelState struct {
@@ -759,21 +771,34 @@ func (s *server) transcriptionStatus(w http.ResponseWriter, r *http.Request, use
 	if _, err := os.Stat(t.modelPath(vadModelFile)); err != nil {
 		vad = false // it can, but has nothing to detect with yet
 	}
-	st := TranscriptionStatus{Available: bin != "", VAD: vad, Settings: t.settings(), Ready: t.installedCurrent(), Queue: []transcribeJob{}}
+	st := TranscriptionStatus{Available: bin != "", VAD: vad, Settings: t.settings(), Ready: t.installedCurrent(),
+		Queue: []transcribeJob{}, Waiting: []WaitingBook{}}
 	t.mu.Lock()
+	at := map[string]int{}
 	for i, j := range t.queue {
 		if s.lib.bookFor(a, j.BookID) == nil {
 			continue
 		}
+		mine := j.By == user
 		if !a.admin() {
 			j.By = ""
 		}
 		if i == 0 && t.running {
-			st.Running = &RunningJob{j, t.progress}
+			st.Running = &RunningJob{j, t.progress, t.startedAt, mine}
 			continue
 		}
 		if len(st.Queue) < 500 {
 			st.Queue = append(st.Queue, j)
+		}
+		k, ok := at[j.BookID]
+		if !ok {
+			k = len(st.Waiting)
+			at[j.BookID] = k
+			st.Waiting = append(st.Waiting, WaitingBook{BookID: j.BookID})
+		}
+		st.Waiting[k].Chapters++
+		if mine {
+			st.Waiting[k].Mine++
 		}
 	}
 	if a.admin() {

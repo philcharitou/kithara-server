@@ -409,6 +409,7 @@ function renderShell(current) {
       el("img", { src: "logo.svg", alt: "" }), el("span", { class: "name" }, "Kithara")),
     el("span", { class: "server small clip" }, state.server?.name || ""),
     el("span", { class: "spacer" }),
+    txChip(),
     themeBtn,
     iconBtn("logout", "Sign out", signOut));
 
@@ -422,6 +423,8 @@ function renderShell(current) {
 
 async function signOut() {
   stopPlayer();
+  clearTimeout(txq.timer);
+  txq.st = null;
   try { await api("/api/auth/logout", { method: "POST" }); } catch { /* signed out regardless */ }
   forgetToken();
   renderSignIn();
@@ -788,7 +791,7 @@ function bookTable(books) {
           el("input", { type: "checkbox", tabindex: -1, "aria-label": "Select " + b.title, checked: pick.ids.has(b.id) ? true : null,
             onchange: () => pickToggle(b.id, row, true) })) : null,
         el("td", { class: "c-cover" }, cover(b)),
-        el("td", {}, el("div", { class: "strong clip2" }, b.title), b.subtitle ? el("div", { class: "small muted clip" }, b.subtitle) : null),
+        el("td", {}, el("div", { class: "strong clip2" }, b.title), b.subtitle ? el("div", { class: "small muted clip" }, b.subtitle) : null, txMark(b.id)),
         el("td", { class: "hide-sm" }, b.author || span("muted", "—")),
         el("td", { class: "hide-sm" }, b.narrator || span("muted", "—")),
         el("td", { class: "hide-sm" }, seriesLabel(b) || span("muted", "—")),
@@ -806,7 +809,8 @@ function bookTile(b) {
     p && !p.finished && p.positionMs > 0 ? gradientProgress(p.fraction) : null,
     el("div", { class: "strong clip2" }, b.title),
     el("div", { class: "small muted clip" }, b.author || "Unknown author"),
-    statusText(b));
+    statusText(b),
+    txMark(b.id));
   if (!pick.on) return tile;
   const wrap = el("div", { class: "tile-wrap" + (pick.ids.has(b.id) ? " picked" : "") }, tile,
     el("input", { type: "checkbox", class: "tile-pick", "aria-label": "Select " + b.title, checked: pick.ids.has(b.id) ? true : null,
@@ -891,6 +895,7 @@ function bulkBar(refill) {
       let n = 0;
       for (const b of books) n += (await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "POST", body: {} })).queued;
       toast(n ? `Queued ${plural(n, "chapter")}` : "Nothing left to transcribe");
+      txWatch();
     }));
   }).catch(() => {});
   if (isAdmin()) actions.prepend(run([icon("magic"), "Find details"], (books) => openSheet(`Find details · ${plural(books.length, "book")}`, bulkMatch(books), { wide: true })));
@@ -935,6 +940,7 @@ async function addManyToList(books) {
 // ------------------------------------------------------------------ sheets
 
 function openSheet(title, parts, { onBack, wide } = {}) {
+  delete dialog.dataset.sheet;
   dialog.replaceChildren(
     el("div", { class: "sheet-head" },
       onBack ? iconBtn("back", "Back", onBack) : null,
@@ -2216,11 +2222,12 @@ function transcriptPanel(b) {
       try {
         const r = await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "POST", body: again ? { again: true } : {} });
         toast(r.queued ? `Queued ${plural(r.queued, "chapter")}` : "Nothing left to transcribe");
+        txWatch();
         draw();
       } catch (e) { toast(e.message); }
     };
     const stop = async () => {
-      try { await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "DELETE" }); draw(); } catch (e) { toast(e.message); }
+      try { await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "DELETE" }); txWatch(); draw(); } catch (e) { toast(e.message); }
     };
     const actions = el("div", { class: "row" },
       tx.passages.length ? el("button", { class: "btn secondary small", type: "button", onclick: () => openTranscript(b, tx) }, icon("notes"), "Read along") : null,
@@ -2398,23 +2405,18 @@ function transcriptionSettings() {
 
     const whole = el("button", { class: "btn secondary small", type: "button", onclick: async () => {
       if (!confirm("Transcribe every chapter of every book not transcribed yet? On a big library this runs for days; it can be stopped at any time.")) return;
-      try { const r = await api("/api/transcription/library", { method: "POST" }); toast(`Queued ${plural(r.queued, "chapter")}`); refresh(); } catch (e) { toast(e.message); }
+      try { const r = await api("/api/transcription/library", { method: "POST" }); toast(`Queued ${plural(r.queued, "chapter")}`); txWatch(); refresh(); } catch (e) { toast(e.message); }
     } }, icon("magic"), "Transcribe the whole library");
-    const clear = el("button", { class: "btn ghost small", type: "button", onclick: async () => {
-      try { await api("/api/transcription/queue", { method: "DELETE" }); refresh(); } catch (e) { toast(e.message); }
-    } }, "Stop and clear the queue");
-    const waiting = st.queue.length;
+    const waiting = st.waiting.reduce((n, w) => n + w.chapters, 0);
     box.replaceChildren(
       model_, form,
-      el("div", { class: "panel stack", style: "margin-top:12px" },
-        st.running ? el("div", { class: "stack" },
-          span("small", `Transcribing ${title(st.running.bookId)}, chapter ${st.running.chapter + 1}`),
-          gradientProgress(st.running.progress)) : span("small muted", waiting ? "Waiting for the model" : "Nothing being transcribed."),
-        waiting ? span("small muted", `${plural(waiting, "chapter")} waiting${waiting >= 500 ? " or more" : ""}`) : null,
-        st.lastError ? span("small err", "Last error: " + st.lastError) : null,
-        el("div", { class: "row" }, whole, st.running || waiting ? clear : null)),
+      el("div", { class: "panel row", style: "margin-top:12px" },
+        span("small grow", st.running ? `Transcribing ${title(st.running.bookId)}` + (waiting ? `, ${plural(waiting, "more chapter")} waiting` : "") :
+          waiting ? `${plural(waiting, "chapter")} waiting` : "Nothing being transcribed."),
+        st.running || waiting || st.lastError ? el("button", { class: "btn ghost small", type: "button", onclick: openQueue }, "Open the queue") : null,
+        whole),
       el("p", { class: "tiny muted", style: "margin-top:8px" }, st.vad ? "Speech is found with whisper.cpp's voice-activity detector, so passages begin where speech does." : "This whisper.cpp has no voice-activity detector; passages follow Whisper's own timing."));
-    return !!(st.running || waiting || dl && !dl.error);
+    return !!(dl && !dl.error);
   };
   // Poll while something is happening; an action starts polling again.
   let polling = false;
@@ -2425,6 +2427,144 @@ function transcriptionSettings() {
   const refresh = () => { if (!polling) { polling = true; loop(); } else draw(); };
   refresh();
   return box;
+}
+
+// ------------------------------------------------------------------ transcription status
+
+// One poller for everything that shows transcription in progress: the chip in the top
+// bar, the queue sheet, and the markers on books. Every few seconds while something is
+// queued, once a minute otherwise.
+const txq = { st: null, timer: 0, chip: null };
+
+function txWatch(delay = 0) {
+  clearTimeout(txq.timer);
+  txq.timer = setTimeout(txPoll, delay);
+}
+
+async function txPoll() {
+  if (!state.token) return;
+  const gen = state.gen;
+  let st = null;
+  try { st = await api("/api/transcription"); } catch { /* look again later */ }
+  if (gen !== state.gen) return;
+  txq.st = st;
+  txDraw();
+  txq.timer = setTimeout(txPoll, txBusy() ? 4000 : 60000);
+}
+
+const txBusy = () => !!(txq.st?.available && (txq.st.running || txq.st.waiting.length));
+const txWaitingChapters = () => (txq.st?.waiting || []).reduce((n, w) => n + w.chapters, 0);
+
+function txChip() {
+  if (!txq.chip) {
+    txq.chip = el("button", { class: "tx-chip", type: "button", title: "Transcription queue", onclick: openQueue },
+      el("span", { class: "tx-ring", "aria-hidden": "true" }), span("tx-chip-text", ""));
+    txq.chip.hidden = true;
+  }
+  return txq.chip;
+}
+
+function txDraw() {
+  const st = txq.st;
+  const chip = txChip();
+  chip.hidden = !txBusy();
+  if (txBusy()) {
+    const waiting = txWaitingChapters();
+    const p = st.running ? st.running.progress : 0;
+    chip.style.setProperty("--p", p.toFixed(3));
+    chip.classList.toggle("idle", !st.running);
+    chip.querySelector(".tx-chip-text").textContent = (st.running ? `Transcribing ${Math.floor(p * 100)}%` : "Transcription waiting") +
+      (waiting ? ` · ${waiting} waiting` : "");
+  }
+  document.querySelectorAll(".tx-mark").forEach(txMarkDraw);
+  if (dialog.open && dialog.dataset.sheet === "queue") drawQueue();
+}
+
+// txMark is a book's marker: shown while it is being transcribed or waiting to be.
+function txMark(bookId) {
+  const m = el("span", { class: "tx-mark", "data-book": bookId });
+  txMarkDraw(m);
+  return m;
+}
+
+function txMarkDraw(m) {
+  const st = txq.st, id = m.dataset.book;
+  const running = st?.running?.bookId === id;
+  const waiting = !running && st?.waiting.some((w) => w.bookId === id);
+  m.hidden = !running && !waiting;
+  m.classList.toggle("now", running);
+  m.replaceChildren(...(running || waiting ? [icon("notes"), running ? "Transcribing" : "Waiting to transcribe"] : []));
+}
+
+const chapterMs = (b, i) => {
+  const c = b?.chapters[i];
+  return c ? c.endMs - c.startMs : b?.durationMs || 0;
+};
+
+const fmtLeft = (ms) => ms < 60000 ? "under a minute" : fmtDuration(ms);
+
+function openQueue() {
+  openSheet("Transcription queue", [el("div", { id: "txq-body", class: "stack" }, el("p", { class: "muted" }, "Loading…"))]);
+  dialog.dataset.sheet = "queue";
+  drawQueue();
+  txWatch();
+}
+
+// drawQueue fills the queue sheet from the last status: the chapter being transcribed,
+// with time left, and the books waiting, each with Stop where the reader may stop it.
+function drawQueue() {
+  const body = document.getElementById("txq-body");
+  const st = txq.st;
+  if (!body || !st) return;
+  const book = (id) => state.books.find((b) => b.id === id);
+  const stop = (id, label = "Stop") => el("button", { class: "btn ghost small", type: "button", onclick: async () => {
+    try { await api(`/api/books/${encodeURIComponent(id)}/transcribe`, { method: "DELETE" }); txWatch(); } catch (e) { toast(e.message); }
+  } }, label);
+  const parts = [];
+  // Speed so far, in audio per wall-clock millisecond, for the time left.
+  let speed = 0, leftNow = 0;
+  if (st.running) {
+    const r = st.running, b = book(r.bookId);
+    const len = chapterMs(b, r.chapter), spent = Date.now() - r.startedAt;
+    if (r.progress > 0.02 && spent > 5000) speed = (len * r.progress) / spent;
+    const left = leftNow = speed ? (len * (1 - r.progress)) / speed : 0;
+    parts.push(el("div", { class: "panel row tx-now" },
+      b ? cover(b) : null,
+      el("div", { class: "grow stack" },
+        el("div", { class: "strong clip" }, b?.title || "A book you can't see"),
+        span("small muted", `Chapter ${r.chapter + 1}` + (b?.chapters[r.chapter] ? `: ${b.chapters[r.chapter].title}` : "") + ` · ${fmtDuration(len)} of audio`),
+        gradientProgress(r.progress),
+        span("small", `${Math.floor(r.progress * 100)}%` + (left ? ` · about ${fmtLeft(left)} left` : ""))),
+      isAdmin() || r.mine ? stop(r.bookId) : null));
+  }
+  if (st.waiting.length) {
+    const total = txWaitingChapters();
+    // An estimate for everything, from the chapters listed (the first 500).
+    let rest = 0;
+    if (speed && total <= st.queue.length) for (const j of st.queue) rest += chapterMs(book(j.bookId), j.chapter);
+    parts.push(el("div", { class: "row" },
+      el("h3", { class: "section-title grow", style: "margin:6px 0 0" }, `Waiting · ${plural(total, "chapter")}`),
+      rest ? span("small muted", `about ${fmtLeft(leftNow + rest / speed)} for all of it`) : null));
+    parts.push(el("div", { class: "lines" }, st.waiting.map((w) => {
+      const b = book(w.bookId);
+      return el("div", {},
+        span("t clip", b?.title || "A book you can't see"),
+        span("small muted", plural(w.chapters, "chapter") + (!isAdmin() && w.mine && w.mine < w.chapters ? ` (${w.mine} yours)` : "")),
+        isAdmin() || w.mine ? stop(w.bookId) : null);
+    })));
+    if (!st.running) parts.push(el("p", { class: "small err" }, !st.ready ?
+      "Nothing runs until the transcription model is downloaded" + (isAdmin() ? ": Settings, Transcription." : "; ask the server's admin.") :
+      "Starting soon."));
+  }
+  if (!st.running && !st.waiting.length) parts.push(emptyNote("Nothing being transcribed. Transcribe a book from its page, or tick some books in the library and choose Transcribe."));
+  if (isAdmin() && st.lastError) parts.push(el("p", { class: "small err" }, "Last error: " + st.lastError));
+  if (isAdmin()) parts.push(el("div", { class: "row end" },
+    el("button", { class: "btn ghost small", type: "button", onclick: () => { dialog.close(); go("settings"); } }, icon("settings"), "Transcription settings"),
+    st.running || st.waiting.length ? el("button", { class: "btn ghost small", type: "button", onclick: async () => {
+      if (!confirm("Stop transcribing and empty the whole queue?")) return;
+      try { await api("/api/transcription/queue", { method: "DELETE" }); txWatch(); } catch (e) { toast(e.message); }
+    } }, "Stop everything") : null));
+  body.replaceChildren(...parts);
 }
 
 // ------------------------------------------------------------------ collections and playlists
@@ -2547,6 +2687,7 @@ async function addToList(b) {
 async function start() {
   state.me = await api("/api/me");
   drawPlayer();
+  txWatch();
   const hash = location.hash.slice(1);
   if (VIEWS.some((v) => v.id === hash)) state.view = hash;
   render();

@@ -163,6 +163,13 @@ func TestTranscribeRules(t *testing.T) {
 		t.Fatalf("a listener asked to redo a book: %d", res.StatusCode)
 	}
 	call(t, ts, "POST", "/api/books/"+b.ID+"/transcribe", admin, nil)
+	// The kid sees the book waiting, grouped, none of it theirs to stop.
+	var st TranscriptionStatus
+	_, body := call(t, ts, "GET", "/api/transcription", kid, nil)
+	json.Unmarshal(body, &st)
+	if len(st.Waiting) != 1 || st.Waiting[0].BookID != b.ID || st.Waiting[0].Chapters == 0 || st.Waiting[0].Mine != 0 {
+		t.Fatalf("waiting: %s", body)
+	}
 	if _, body := call(t, ts, "DELETE", "/api/books/"+b.ID+"/transcribe", kid, nil); !strings.Contains(string(body), `"removed":0`) {
 		t.Fatalf("a listener stopped the admin's job: %s", body)
 	}
