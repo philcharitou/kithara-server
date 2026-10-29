@@ -1,0 +1,40 @@
+# The GPU image: as the Dockerfile beside it, with whisper.cpp built for Vulkan, so
+# transcription runs on the graphics card (AMD and Intel through Mesa, NVIDIA through
+# its own driver) and falls back to the processor when there is none. Debian rather
+# than Alpine: NVIDIA's container toolkit brings a glibc driver.
+#
+#   docker run --device /dev/dri --group-add <render group id> …     AMD, Intel
+#   docker run --gpus all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics …
+
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY *.go ./
+COPY web ./web
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /kithara-server .
+
+FROM debian:bookworm-slim AS whisper
+ARG WHISPER_VERSION=v1.7.6
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates cmake make g++ libvulkan-dev glslc \
+ && git clone --depth 1 --branch "$WHISPER_VERSION" https://github.com/ggml-org/whisper.cpp /whisper \
+ && cmake -S /whisper -B /whisper/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+      -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF \
+ && cmake --build /whisper/build -j"$(nproc)" --target whisper-cli \
+ && install -m 755 /whisper/build/bin/whisper-cli /usr/local/bin/whisper-cli
+
+FROM debian:bookworm-slim
+# Mesa's software Vulkan device (lavapipe) is removed: with it, a machine without a
+# graphics card would "transcribe on the GPU" more slowly than on the processor.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg ca-certificates libvulkan1 mesa-vulkan-drivers libgomp1 \
+ && rm -rf /var/lib/apt/lists/* /usr/share/vulkan/icd.d/lvp_icd*.json \
+ && useradd --create-home --home-dir /data kithara
+COPY --from=whisper /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY --from=build /kithara-server /usr/local/bin/kithara-server
+USER kithara
+ENV KITHARA_LIBRARY=/library KITHARA_DATA=/data KITHARA_ADDR=:8080
+VOLUME ["/data"]
+EXPOSE 8080
+ENTRYPOINT ["kithara-server"]
+CMD ["serve"]

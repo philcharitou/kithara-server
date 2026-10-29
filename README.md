@@ -282,6 +282,23 @@ docker run -d --name kithara   -v /srv/books:/books -v kithara-data:/data -p 808
 Then **Libraries → Add** can make or pick `/books/Kids` beside it. The container only
 sees what is mounted into it, and a library can't be inside another one.
 
+**Transcribing on the graphics card.** The `-vulkan` image (`ghcr.io/philcharitou/kithara-server:latest-vulkan`,
+amd64) has whisper.cpp built for Vulkan, which is usually several times faster than
+the processor. Give the container the GPU:
+
+```bash
+# AMD or Intel: the render device, and its group (the number from `getent group render`)
+docker run … --device /dev/dri --group-add 105 ghcr.io/philcharitou/kithara-server:latest-vulkan
+# NVIDIA, with the NVIDIA Container Toolkit installed
+docker run … --gpus all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics ghcr.io/philcharitou/kithara-server:latest-vulkan
+```
+
+With no GPU it transcribes on the processor, as the normal image does. The server's log
+shows the device whisper.cpp picked (`whisper-cli: ggml_vulkan: …`) when the first chapter
+starts. Docker Desktop on Windows and macOS passes only NVIDIA cards through to
+containers; there, run the server natively with a Vulkan build of whisper-cli instead
+(set `KITHARA_WHISPER` to it).
+
 **HTTPS.** Plain `http://` is fine on your own Wi-Fi. Anywhere else, put it behind a
 reverse proxy that terminates TLS (Caddy does this with two lines; nginx with certbot
 works too) and bind the server to `127.0.0.1`. The token in every request is a bearer

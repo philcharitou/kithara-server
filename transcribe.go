@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -170,7 +171,10 @@ func (t *transcriber) settings() TranscribeSettings {
 		c.Model = defaultWhisperModel
 	}
 	if c.Threads <= 0 {
-		c.Threads = min(max(runtime.NumCPU()-1, 1), 16)
+		// About the number of cores, not hardware threads: past that whisper.cpp gets
+		// slower, not faster (15 threads took nearly three times as long as 4 on an 8-core,
+		// 16-thread laptop).
+		c.Threads = min(max(runtime.NumCPU()/2, 1), 8)
 	}
 	m, _ := modelByID(c.Model)
 	if c.Language == "" || m.English {
@@ -599,6 +603,17 @@ type progressWriter struct {
 	last   []string
 }
 
+// backendLines is how many of whisper-cli's lines about its compute device (a GPU
+// through Vulkan or CUDA, or none) go to the log: enough to see what a run is using.
+var backendLines atomic.Int32
+
+func noteBackend(line string) {
+	l := strings.ToLower(line)
+	if (strings.Contains(l, "ggml_vulkan") || strings.Contains(l, "ggml_cuda") || strings.Contains(l, "backend")) && backendLines.Add(1) <= 6 {
+		log.Printf("whisper-cli: %s", clip(line, 200))
+	}
+}
+
 var progressLine = regexp.MustCompile(`progress\s*=\s*(\d+)%`)
 
 func (p *progressWriter) Write(b []byte) (int, error) {
@@ -614,6 +629,7 @@ func (p *progressWriter) Write(b []byte) (int, error) {
 			n, _ := strconv.Atoi(m[1])
 			p.report(float64(min(n, 100)) / 100)
 		} else if line != "" {
+			noteBackend(line)
 			p.last = append(p.last, line)
 			if len(p.last) > 5 {
 				p.last = p.last[1:]

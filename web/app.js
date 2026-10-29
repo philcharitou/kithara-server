@@ -2508,7 +2508,7 @@ function transcriptionSettings() {
     el("label", { class: "field" }, el("span", {}, "Language (a code such as de, or auto)"), lang),
     el("label", { class: "check wide small" }, auto, "Transcribe new books automatically, as they're added (uploaded, copied in and rescanned, or in a new library)"),
     autoRow,
-    el("p", { class: "wide tiny muted" }, "Bigger models are slower and more accurate; the English-only ones are the better choice for English books. The phone app uses tiny, base or small."),
+    el("p", { class: "wide tiny muted" }, "Bigger models are slower and more accurate; the English-only ones are the better choice for English books. The phone app uses tiny, base or small. More threads isn't always faster: about the number of processor cores is best."),
     el("div", { class: "wide row end" }, el("button", { class: "btn", type: "submit" }, "Save")));
 
     const model_ = el("div", { class: "row", style: "margin:4px 0 12px" },
