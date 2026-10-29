@@ -203,3 +203,43 @@ func TestDecodeRelativeLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// New books are queued as they arrive, in the libraries chosen; books already there,
+// and new ones elsewhere, are not.
+func TestAutoTranscribe(t *testing.T) {
+	ts, srv, _, data := twoLibraryServer(t)
+	withFakeWhisper(t, data)
+	os.Remove(filepath.Join(data, "models", "ggml-small.en.bin")) // nothing runs: jobs stay queued
+	admin := loginAs(t, ts, "phil", "correct horse", "laptop")
+	if res, body := call(t, ts, "PUT", "/api/settings/transcription", admin, TranscribeSettings{Auto: true, AutoLibraries: []string{"Kids"}}); res.StatusCode != 200 {
+		t.Fatalf("settings: %d %s", res.StatusCode, body)
+	}
+	if res, _ := call(t, ts, "PUT", "/api/settings/transcription", admin, TranscribeSettings{Auto: true, AutoLibraries: []string{"Nope"}}); res.StatusCode != 400 {
+		t.Fatalf("an unknown library was accepted: %d", res.StatusCode)
+	}
+	audio, _ := os.ReadFile(sampleAudio(t))
+	for _, r := range srv.lib.roots {
+		dir := filepath.Join(r.path, "Brand New "+r.name)
+		os.MkdirAll(dir, 0o755)
+		os.WriteFile(filepath.Join(dir, "book.m4b"), audio, 0o644)
+	}
+	if res, _ := call(t, ts, "POST", "/api/rescan", admin, nil); res.StatusCode != 200 {
+		t.Fatalf("rescan: %d", res.StatusCode)
+	}
+	var queued []transcribeJob
+	for range 50 {
+		srv.trans.mu.Lock()
+		queued = append([]transcribeJob(nil), srv.trans.queue...)
+		srv.trans.mu.Unlock()
+		if len(queued) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(queued) != 1 || queued[0].By != autoQueuer {
+		t.Fatalf("queued: %+v", queued)
+	}
+	if b := srv.lib.book(queued[0].BookID); b == nil || b.Library != "Kids" || b.Title != "Brand New Kids" {
+		t.Fatalf("queued the wrong book: %+v", b)
+	}
+}

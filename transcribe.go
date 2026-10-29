@@ -75,7 +75,32 @@ type TranscribeSettings struct {
 	Model    string `json:"model,omitempty"`
 	Threads  int    `json:"threads,omitempty"`
 	Language string `json:"language,omitempty"` // en, another code, or auto; multilingual models only
+	// Auto transcribes books as they arrive, in AutoLibraries (all of them when empty).
+	Auto          bool     `json:"auto,omitempty"`
+	AutoLibraries []string `json:"autoLibraries,omitempty"`
 }
+
+// autoTranscribe queues new books, when the admin has asked for that.
+func (s *server) autoTranscribe(ids []string) {
+	cfg := s.trans.settings()
+	if !cfg.Auto || !s.trans.available() {
+		return
+	}
+	var reqs []queueRequest
+	for _, id := range ids {
+		b := s.lib.book(id)
+		if b == nil || len(cfg.AutoLibraries) > 0 && !slices.ContainsFunc(cfg.AutoLibraries, func(n string) bool { return strings.EqualFold(n, b.Library) }) {
+			continue
+		}
+		reqs = append(reqs, queueRequest{book: b})
+	}
+	if n := s.trans.enqueue(reqs, false, autoQueuer, 0); n > 0 {
+		log.Printf("transcribing %d new book(s): %d chapters queued", len(reqs), n)
+	}
+}
+
+// autoQueuer is who the queue says asked, for books queued as they arrived.
+const autoQueuer = "(new books)"
 
 type transcribeJob struct {
 	BookID  string `json:"bookId"`
@@ -856,6 +881,10 @@ func (s *server) putTranscribeSettings(w http.ResponseWriter, r *http.Request, u
 	}
 	if in.Threads < 0 || in.Threads > 64 || in.Language != "" && !languageCode.MatchString(in.Language) {
 		writeError(w, http.StatusBadRequest, "threads are 1 to 64, and a language is a code such as en or de, or auto")
+		return
+	}
+	if err := s.checkLibraries(in.AutoLibraries); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	t := s.trans

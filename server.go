@@ -50,6 +50,7 @@ func newServer(st *store, lib *library, name string) *server {
 	s.loadOIDC()
 	s.tdone = map[string]doneEntry{}
 	s.trans = newTranscriber(s)
+	lib.whenNew(s.autoTranscribe)
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.health)
 	m.HandleFunc("POST /api/auth", s.auth)

@@ -101,6 +101,11 @@ type library struct {
 	lastScanMs int64
 	problems   []Problem // what the last scan could not use
 	probe      *probeCache
+
+	// New books: ids handed out for the first time, kept until someone listens (onNew),
+	// so books found by the scan at start are not missed.
+	fresh []string
+	onNew func(ids []string)
 }
 
 // libRoot is one library folder.
@@ -328,6 +333,7 @@ func (l *library) rescan() error {
 
 // rescanLocked is rescan for a caller that holds scanMu.
 func (l *library) rescanLocked() error {
+	defer l.tellNew()
 	start := time.Now()
 	if err := l.syncStored(); err != nil {
 		log.Printf("libraries.json: %v", err)
@@ -383,6 +389,27 @@ func (e scanError) Unwrap() error { return e.error }
 
 // publish builds the catalogue, its served views and the problem list from each
 // library's books. The caller holds scanMu.
+// whenNew calls f with the ids of books seen for the first time, after each scan that
+// finds some, and at once with any found before it was set.
+func (l *library) whenNew(f func(ids []string)) {
+	l.mu.Lock()
+	l.onNew = f
+	l.mu.Unlock()
+	l.tellNew()
+}
+
+func (l *library) tellNew() {
+	l.mu.Lock()
+	ids, f := l.fresh, l.onNew
+	if f != nil {
+		l.fresh = nil
+	}
+	l.mu.Unlock()
+	if f != nil && len(ids) > 0 {
+		go f(ids) // not while holding up the scan
+	}
+}
+
 func (l *library) publish() error {
 	var problems []Problem
 	var all []Book
@@ -992,6 +1019,7 @@ func (l *library) idByPath(r *libRoot, rel, preferred string) string {
 	}
 	if preferred == "" {
 		preferred = newID()
+		l.fresh = append(l.fresh, preferred) // a book never seen before
 	}
 	r.ids[rel] = preferred
 	r.idsDirty = true

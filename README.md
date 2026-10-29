@@ -178,7 +178,9 @@ its path. The server finds it within a minute, without a restart.
 In **Settings → Transcription**, pick a model and download it. The English-only tiny,
 base, small and medium models are the ones for English books; large-v3-turbo handles
 other languages. Then transcribe books one at a time from their pages, or the whole
-library at once. Chapters are queued and worked through one at a time, and the queue
+library at once. Tick **Transcribe new books automatically** to have every book that
+arrives later (uploaded, copied in, or in a newly added library) queued as soon as a scan
+finds it, in all libraries or only the ones you pick. Chapters are queued and worked through one at a time, and the queue
 survives restarts. ffmpeg cuts each chapter out of the book's files (even when it runs
 across two), and whisper.cpp's voice-activity detector starts each passage where the
 speech starts.

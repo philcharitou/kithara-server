@@ -2472,6 +2472,21 @@ function transcriptionSettings() {
       `${m.label}, ${fmtBytes(m.sizeBytes)}${m.installed ? " · downloaded" : ""}`)));
     const threads = el("input", { type: "number", min: 1, max: 64, value: s.threads });
     const lang = el("input", { type: "text", value: s.language, maxlength: 4, placeholder: "auto" });
+    // New books transcribed as they arrive, in all libraries or the ones chosen.
+    const auto = el("input", { type: "checkbox", checked: s.auto ? true : null });
+    const autoLibs = new Set((s.autoLibraries || []).map((x) => x.toLowerCase()));
+    const autoChips = el("div", { class: "chips" });
+    const drawAutoLibs = () => autoChips.replaceChildren(
+      chip("All libraries", !autoLibs.size, () => { autoLibs.clear(); drawAutoLibs(); }),
+      ...state.libraries.map((l) => {
+        const k = l.name.toLowerCase();
+        return chip(l.name, autoLibs.has(k), () => { autoLibs.has(k) ? autoLibs.delete(k) : autoLibs.add(k); drawAutoLibs(); });
+      }));
+    drawAutoLibs();
+    const autoRow = el("div", { class: "wide" }, el("div", { class: "small muted", style: "margin-bottom:6px" }, "New books in"), autoChips);
+    const showAutoRow = () => { autoRow.hidden = !auto.checked || state.libraries.length < 2; };
+    auto.addEventListener("change", showAutoRow);
+    showAutoRow();
     const english = () => st.models.find((m) => m.id === model.value)?.englishOnly;
     const syncLang = () => { lang.disabled = english(); if (english()) lang.value = "en"; };
     model.addEventListener("change", syncLang);
@@ -2482,7 +2497,8 @@ function transcriptionSettings() {
     const form = el("form", { class: "form", onsubmit: async (ev) => {
       ev.preventDefault();
       try {
-        await api("/api/settings/transcription", { method: "PUT", body: { model: model.value, threads: Number(threads.value), language: english() ? "" : lang.value.trim() } });
+        await api("/api/settings/transcription", { method: "PUT", body: { model: model.value, threads: Number(threads.value), language: english() ? "" : lang.value.trim(),
+          auto: auto.checked, autoLibraries: state.libraries.filter((l) => autoLibs.has(l.name.toLowerCase())).map((l) => l.name) } });
         toast("Transcription settings saved");
         refresh();
       } catch (e) { toast(e.message); }
@@ -2490,6 +2506,8 @@ function transcriptionSettings() {
     el("label", { class: "field" }, el("span", {}, "Model"), model),
     el("label", { class: "field" }, el("span", {}, "Processor threads"), threads),
     el("label", { class: "field" }, el("span", {}, "Language (a code such as de, or auto)"), lang),
+    el("label", { class: "check wide small" }, auto, "Transcribe new books automatically, as they're added (uploaded, copied in and rescanned, or in a new library)"),
+    autoRow,
     el("p", { class: "wide tiny muted" }, "Bigger models are slower and more accurate; the English-only ones are the better choice for English books. The phone app uses tiny, base or small."),
     el("div", { class: "wide row end" }, el("button", { class: "btn", type: "submit" }, "Save")));
 
