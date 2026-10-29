@@ -696,7 +696,7 @@ async function viewLibrary(tools) {
   pick.on = true;
   pick.listeners = [];
   const prefs = state.prefs;
-  tools.append(el("button", { class: "btn secondary small", type: "button", onclick: searchTranscriptsSheet }, icon("search"), "Search what's said"));
+  tools.append(el("button", { class: "btn secondary small", type: "button", onclick: searchTranscriptsSheet }, icon("search"), "Search transcripts"));
   if (isAdmin()) {
     tools.append(rescanButton());
   }
@@ -2323,7 +2323,7 @@ function followTranscript(pos, jump = false) {
   if (!tx.filter && (jump || Date.now() - tx.userScrolledAt > 5000)) line.scrollIntoView({ block: "center", behavior: jump ? "auto" : "smooth" });
 }
 
-// Search what's said across every transcribed book the user may see.
+// Search transcripts: what is said in every transcribed book the user may see.
 function searchTranscriptsSheet() {
   const results = el("div", { class: "lines" });
   const input = el("input", { type: "search", placeholder: "A word or a phrase", "aria-label": "Search transcripts", autofocus: true });
@@ -2345,7 +2345,9 @@ function searchTranscriptsSheet() {
     } catch (e) { toast(e.message); }
   };
   input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 250); });
-  openSheet("Search what's said", [el("div", { class: "search" }, icon("search"), input), results]);
+  openSheet("Search transcripts", [
+    el("p", { class: "small muted" }, "Finds words spoken in the books that have been transcribed, and plays from where they're said. Transcribe a book from its page, or tick some books and choose Transcribe."),
+    el("div", { class: "search" }, icon("search"), input), results]);
 }
 
 // transcriptionSettings: the engine, the model and the queue, kept up to date while a
