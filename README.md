@@ -189,6 +189,64 @@ Apps can also send up transcripts they made on the phone. Transcripts are kept p
 book, are shared by everyone who can see it, and survive edits to its chapters, but
 not changes to its audio files.
 
+## Chapter names from transcripts
+
+Rips without chapter marks of their own leave titles like "001" or "Chapter 12", which
+are wrong as soon as a book opens with credits or a prologue. The narrator usually reads
+the heading aloud, so once a book has a transcript, **Name chapters** on its page
+suggests names from what is said at the start of each chapter ("Chapter 14: Entering
+Hungry Eyes Vendor Village", "Prologue", "Opening credits"), to review and save. A
+chapter number that breaks the order is taken for a mishearing and left out, and a gap
+is only filled in when the count is exactly right. The same works for many books at
+once from the library (tick them, **Name chapters**), changing only titles that are
+just a number. The Android app names chapters the same way.
+
+## Changing the files
+
+From a book's page (**Change the files**) or for many ticked books at once, an admin can:
+
+- **write the details into the files**: title, author, narrator, series, description,
+  chapters and cover as the server shows them (matched and edited ones included) go into
+  the audio files themselves, so they are right in any other player too. m4b, m4a, mp3,
+  FLAC and Ogg; other formats are left alone.
+- **merge several files into one m4b**, with chapters (the files become the chapters if
+  there were none), details and cover. AAC parts are joined as they are; anything else is
+  encoded to AAC at about its own bitrate. The old files move into `.originals` in the
+  book's folder (scans skip it), or are deleted if you tick that.
+
+Each new file is written beside the old one and checked (its length must match) before it
+takes the old one's place, so a failure changes nothing. The book keeps its id, so
+everyone's place, bookmarks and its transcript carry over. Jobs run one at a time;
+Maintenance shows them. The server must be able to write to the book's folder: in
+Docker, files copied in as root are not writable by the server's user
+(`chown -R 1000:1000` the library, or copy them in as that user).
+
+## Backups
+
+**Settings → Backups** downloads a backup at any time, makes one on the server now, and
+can make one every day at a set hour, keeping the newest few, in `backups/` in the data
+folder or a folder of your choosing (not inside a library). A backup is a zip of
+everything that can't be rebuilt from the audiobook folders: accounts and password
+hashes, everyone's progress, bookmarks, playlists and listening, transcripts,
+collections, added libraries, saved details and covers, and the settings. To restore,
+unzip it into the data folder of a stopped server.
+
+## Notifications
+
+**Settings → Notifications** adds webhooks: the server POSTs to an address when things
+happen, for whichever events you tick. Formats:
+
+- **JSON**, for scripts, Home Assistant, n8n and the like:
+  `{"event": "book.added", "at": 1793300000000, "server": "Home", "message": "New: Dune", "data": {"bookIds": ["…"], "titles": ["Dune"]}}`
+- **ntfy**: the message as the body, with a title, to an `https://ntfy.sh/<topic>` (or
+  your own ntfy) address.
+- **Discord**: to a channel's webhook address.
+
+Events: `book.added`, `transcription.finished` (a whole book), `transcription.failed`,
+`backup.finished`, `backup.failed`, `files.finished`, `files.failed` (merging or writing
+details) and `scan.problems` (a scan could not use some files). Each is tried three times;
+**Send a test** checks a hook straight away.
+
 ## Metadata matching
 
 An admin can look a book up with **Audible**, **Open Library** or **Google Books** and
@@ -223,6 +281,9 @@ transcripts/<bookId>.json  transcripts, made here or sent up by the apps
 transcription.json    the transcription model, threads and language
 transcribe-queue.json chapters waiting to be transcribed
 models/               whisper.cpp models, downloaded on first use
+backups/              daily and on-demand backups (unless another folder is chosen)
+backups.json          the backup schedule
+hooks.json            notification webhooks
 probe-cache.json      ffprobe results, by file
 covers/               artwork extracted from files, and covers chosen by matching
 metadata/<bookId>.json  metadata an admin matched or edited (audiobookshelf's format)
@@ -231,9 +292,9 @@ libraries.json        libraries added from the web page or `kithara-server libra
 settings.json         server name and rescan interval set from the web page
 ```
 
-Back up `users.json`, the `users/` folder, `collections.json`, `oidc.json`,
-`transcripts/` and `metadata/` (plus `covers/*-match.*`), or use the backup button on
-the web page.
+Settings → Backups does this for you, on demand or every day; by hand, keep
+`users.json`, the `users/` folder, `collections.json`, `oidc.json`, `hooks.json`,
+`transcripts/` and `metadata/` (plus `covers/*-match.*`).
 Everything else is rebuilt from the library.
 Removing a user (`user remove NAME`) signs their devices out and moves their
 listening state aside rather than deleting it.
@@ -421,6 +482,17 @@ Everything the app talks is in the protocol document. Server specifics:
   for batches; `GET /api/problems`; `GET`/`PUT /api/settings` (`name`,
   `rescanMinutes`; kept in `settings.json`, overriding `--name`/`--rescan`);
   `GET /api/backup` (a zip); `GET /api/activity?days=30`.
+- **Backups (admin):** `GET /api/backups` (settings, the folder, the last result and the
+  backups kept), `PUT /api/backups/settings` (`daily`, `hour`, `keep`, `dir`),
+  `POST /api/backups` (one now), `GET`/`DELETE /api/backups/{name}`.
+- **Notifications (admin):** `GET`/`POST /api/hooks` (`url`, `name`, `format` json, ntfy or
+  discord, `events`; none means all), `DELETE /api/hooks/{id}`,
+  `POST /api/hooks/{id}/test`.
+- **Chapter names (admin):** `GET /api/books/{id}/chapter-names` suggests names from the
+  transcript (`index`, `current`, `suggested`, `generic`); save them with
+  `PUT /api/books/{id}/chapters`.
+- **Files (admin):** `POST /api/books/{id}/files/tags`, `POST /api/books/{id}/files/merge`
+  (`deleteOriginals`), `GET /api/files/jobs`, `DELETE /api/files/jobs/{id}` (a waiting one).
 - How the apps can use all of this: [docs/app-integration.md](docs/app-integration.md).
 - **Metadata (admin):** `GET /api/books/{bookId}/match?provider=audible|openlibrary|google`
   searches by the book's own title and author, or by `title`, `author`, `asin` (Audible)

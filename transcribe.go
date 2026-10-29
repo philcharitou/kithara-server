@@ -81,6 +81,25 @@ type TranscribeSettings struct {
 	AutoLibraries []string `json:"autoLibraries,omitempty"`
 }
 
+// newBooks is told of books seen for the first time: it says so to the hooks, and
+// queues them for transcription if the admin asked for that.
+func (s *server) newBooks(ids []string) {
+	var titles []string
+	for _, id := range ids {
+		if b := s.lib.book(id); b != nil {
+			titles = append(titles, b.Title)
+		}
+	}
+	if len(titles) > 0 {
+		msg := "New: " + strings.Join(titles[:min(len(titles), 5)], ", ")
+		if len(titles) > 5 {
+			msg += fmt.Sprintf(" and %d more", len(titles)-5)
+		}
+		s.notify(eventBookAdded, msg, map[string]any{"bookIds": ids, "titles": titles})
+	}
+	s.autoTranscribe(ids)
+}
+
 // autoTranscribe queues new books, when the admin has asked for that.
 func (s *server) autoTranscribe(ids []string) {
 	cfg := s.trans.settings()
@@ -240,6 +259,13 @@ func (t *transcriber) binVADLocked() bool {
 	return t.binVAD
 }
 
+// busyWith reports whether a chapter of the book is being transcribed right now.
+func (t *transcriber) busyWith(bookID string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.running && len(t.queue) > 0 && t.queue[0].BookID == bookID
+}
+
 func (t *transcriber) available() bool { bin, _ := t.whisper(); return bin != "" }
 
 // ------------------------------------------------------------------ the queue
@@ -388,6 +414,7 @@ func (t *transcriber) run() {
 			t.queue = t.queue[1:]
 		}
 		t.saveQueueLocked()
+		more := slices.ContainsFunc(t.queue, func(q transcribeJob) bool { return q.BookID == j.BookID })
 		switch {
 		case err != nil && ctx.Err() == nil:
 			t.lastError = fmt.Sprintf("%s, chapter %d: %v", j.BookID, j.Chapter+1, err)
@@ -396,12 +423,31 @@ func (t *transcriber) run() {
 			t.lastError = "" // working again
 		}
 		t.mu.Unlock()
+		title := j.BookID
+		if b := t.s.lib.book(j.BookID); b != nil {
+			title = b.Title
+		}
+		switch {
+		case err != nil && ctx.Err() == nil:
+			t.s.notify(eventTranscriptionFail, fmt.Sprintf("Transcribing %s, chapter %d, failed: %v", title, j.Chapter+1, err),
+				map[string]any{"bookId": j.BookID, "chapter": j.Chapter, "error": err.Error()})
+		case err == nil && !more:
+			t.s.notify(eventTranscriptionDone, title+" is transcribed", map[string]any{"bookId": j.BookID})
+		}
 	}
 }
 
 // runJob transcribes one chapter and stores what it got: all of it, or as much as it
 // managed before an error or a cancel (marked PARTIAL).
 func (t *transcriber) runJob(ctx context.Context, j transcribeJob) error {
+	// A merge or a tag write of this book moves its files: wait for it to finish.
+	for t.s.files.runningOn(j.BookID) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
 	b := t.s.lib.book(j.BookID)
 	if b == nil {
 		return nil // the book has gone

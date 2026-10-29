@@ -106,6 +106,10 @@ type library struct {
 	// so books found by the scan at start are not missed.
 	fresh []string
 	onNew func(ids []string)
+
+	// Told when the files a scan could not use change (scan.problems notifications).
+	onProblems   func([]Problem)
+	problemsSeen string
 }
 
 // libRoot is one library folder.
@@ -404,9 +408,21 @@ func (l *library) tellNew() {
 	if f != nil {
 		l.fresh = nil
 	}
+	var key strings.Builder
+	for _, p := range l.problems {
+		key.WriteString(p.Path + "\x00")
+	}
+	problems, onProblems := []Problem(nil), l.onProblems
+	if key.String() != l.problemsSeen {
+		l.problemsSeen = key.String()
+		problems = append(problems, l.problems...)
+	}
 	l.mu.Unlock()
 	if f != nil && len(ids) > 0 {
 		go f(ids) // not while holding up the scan
+	}
+	if onProblems != nil && len(problems) > 0 {
+		go onProblems(problems)
 	}
 }
 

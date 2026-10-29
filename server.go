@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -39,6 +40,9 @@ type server struct {
 	known    *knownClients // addresses that have signed in to an account before
 	oidc     *oidcBox
 	trans    *transcriber
+	hooks    *hooks
+	backups  *backups
+	files    *fileJobs
 	tmu      sync.Mutex           // writing transcript files, and tdone
 	tdone    map[string]doneEntry // book id -> what is transcribed (transcribedOf)
 }
@@ -50,7 +54,16 @@ func newServer(st *store, lib *library, name string) *server {
 	s.loadOIDC()
 	s.tdone = map[string]doneEntry{}
 	s.trans = newTranscriber(s)
-	lib.whenNew(s.autoTranscribe)
+	s.hooks = newHooks(st.dir)
+	s.backups = newBackups(s)
+	go s.backups.run()
+	s.files = newFileJobs(s)
+	lib.whenNew(s.newBooks)
+	lib.mu.Lock()
+	lib.onProblems = func(p []Problem) {
+		s.notify(eventScanProblems, fmt.Sprintf("The last scan could not use %s", plural(len(p), "file")), map[string]any{"problems": p})
+	}
+	lib.mu.Unlock()
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.health)
 	m.HandleFunc("POST /api/auth", s.auth)
@@ -122,7 +135,21 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("PUT /api/settings", s.withAdmin(s.putSettings))
 	m.HandleFunc("GET /api/settings/oidc", s.withAdmin(s.oidcSettings))
 	m.HandleFunc("PUT /api/settings/oidc", s.withAdmin(s.putOIDCSettings))
-	m.HandleFunc("GET /api/backup", s.withAdmin(s.backup))
+	m.HandleFunc("GET /api/backup", s.withAdmin(s.backupDownload))
+	m.HandleFunc("GET /api/backups", s.withAdmin(s.backupStatus))
+	m.HandleFunc("PUT /api/backups/settings", s.withAdmin(s.putBackupSettings))
+	m.HandleFunc("POST /api/backups", s.withAdmin(s.backupNow))
+	m.HandleFunc("GET /api/backups/{name}", s.withAdmin(s.backupFile))
+	m.HandleFunc("DELETE /api/backups/{name}", s.withAdmin(s.backupFile))
+	m.HandleFunc("GET /api/hooks", s.withAdmin(s.listHooks))
+	m.HandleFunc("POST /api/hooks", s.withAdmin(s.addHook))
+	m.HandleFunc("DELETE /api/hooks/{id}", s.withAdmin(s.deleteHook))
+	m.HandleFunc("POST /api/hooks/{id}/test", s.withAdmin(s.testHook))
+	m.HandleFunc("GET /api/books/{bookId}/chapter-names", s.withAdmin(s.chapterNames))
+	m.HandleFunc("POST /api/books/{bookId}/files/tags", s.withAdmin(s.queueFileJob("tags")))
+	m.HandleFunc("POST /api/books/{bookId}/files/merge", s.withAdmin(s.queueFileJob("merge")))
+	m.HandleFunc("GET /api/files/jobs", s.withAdmin(s.fileJobStatus))
+	m.HandleFunc("DELETE /api/files/jobs/{bookId}", s.withAdmin(s.cancelFileJob))
 	m.HandleFunc("GET /api/activity", s.withAdmin(s.activity))
 	web := s.webHandler()
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

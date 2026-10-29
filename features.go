@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -407,45 +406,6 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, user, token
 	default:
 	}
 	s.getSettings(w, r, user, token)
-}
-
-// ------------------------------------------------------------------ backup (admin)
-
-// backup sends what cannot be rebuilt from the library, as a zip: users and their
-// password hashes, everyone's progress, bookmarks, playlists and listening sessions,
-// collections, transcripts, the libraries added at run time, book ids, saved metadata
-// and covers, settings and the identity provider set-up.
-// Device tokens are left out (restoring signs everyone in again), as are caches.
-func (s *server) backup(w http.ResponseWriter, r *http.Request, user, token string) {
-	dir := s.lib.dataDir
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", contentDisposition("kithara-backup-"+time.Now().Format("2006-01-02")+".zip"))
-	zw := zip.NewWriter(w)
-	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(dir, p)
-		rel = filepath.ToSlash(rel)
-		if d.IsDir() {
-			return nil
-		}
-		keep := rel == "users.json" || rel == "libraries.json" || rel == "settings.json" || rel == "ids.json" ||
-			rel == "collections.json" || rel == "oidc.json" || rel == "transcription.json" ||
-			strings.HasPrefix(rel, "transcripts/") ||
-			strings.HasPrefix(rel, "ids-") || strings.HasPrefix(rel, "users/") || strings.HasPrefix(rel, "metadata/") ||
-			strings.HasPrefix(rel, "covers/") && strings.Contains(path.Base(rel), "-match.")
-		if !keep || strings.HasSuffix(rel, ".tmp") {
-			return nil
-		}
-		return zipFile(zw, rel, p, zip.Deflate)
-	})
-	if err == nil {
-		err = zw.Close()
-	}
-	if err != nil {
-		log.Printf("backup: %v", err)
-	}
 }
 
 // ------------------------------------------------------------------ activity (admin)

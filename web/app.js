@@ -929,7 +929,12 @@ function bulkBar(refill) {
   transcribe.classList.add("needs-transcription");
   transcribe.hidden = !txq.st?.available;
   actions.append(transcribe);
-  if (isAdmin()) actions.prepend(run([icon("magic"), "Find details"], (books) => openSheet(`Find details · ${plural(books.length, "book")}`, bulkMatch(books), { wide: true })));
+  if (isAdmin()) {
+    actions.prepend(run([icon("magic"), "Find details"], (books) => openSheet(`Find details · ${plural(books.length, "book")}`, bulkMatch(books), { wide: true })));
+    actions.append(
+      run([icon("notes"), "Name chapters"], nameChaptersMany),
+      run([icon("files"), "Change the files"], (books) => fileJobSheet(books)));
+  }
   const bar = el("div", { class: "toolbar bulk-bar" },
     count,
     el("button", { class: "btn ghost small", type: "button", onclick: () => { pick.ids.clear(); pickRefresh(); } }, "Clear"),
@@ -1034,7 +1039,9 @@ function bookDetail(b) {
       el("button", { class: "btn secondary small", type: "button", onclick: () => openBook(b.id, "match") }, icon("magic"), "Find details"),
       el("button", { class: "btn secondary small", type: "button", onclick: () => openBook(b.id, "edit") }, icon("edit"), "Edit details"),
       el("button", { class: "btn secondary small", type: "button", onclick: () => pickCover(b) }, icon("image"), "Change cover"),
-      el("button", { class: "btn secondary small", type: "button", onclick: () => openBook(b.id, "chapter-edit") }, icon("chapters"), "Edit chapters")));
+      el("button", { class: "btn secondary small", type: "button", onclick: () => openBook(b.id, "chapter-edit") }, icon("chapters"), "Edit chapters"),
+      el("button", { class: "btn secondary small", type: "button", onclick: () => chapterNamesSheet(b) }, icon("notes"), "Name chapters"),
+      el("button", { class: "btn secondary small", type: "button", onclick: () => fileJobSheet([b]) }, icon("files"), "Change the files")));
   }
 
   const cur = currentChapter(b, p);
@@ -2064,6 +2071,7 @@ function uploadOne(library, rel, file, bar) {
 
 async function viewMaintenance(tools) {
   const [{ problems }] = await Promise.all([api("/api/problems"), loadLibrary()]);
+  const jobs = await fileJobsPanel();
   const gaps = (b) => [!b.coverUrl && "cover", !b.author && "author", !b.description && "description", !b.narrator && "narrator"].filter(Boolean);
   const lacking = state.books.filter((b) => gaps(b).length).sort(byTitle);
 
@@ -2075,6 +2083,7 @@ async function viewMaintenance(tools) {
         el("tbody", {}, problems.map((p) => el("tr", {},
           el("td", {}, p.library), el("td", { class: "mono small" }, p.path), el("td", { class: "err small" }, p.error))))) :
         el("p", { class: "muted", style: "padding:14px" }, "The last scan used everything it found.")),
+    jobs,
     el("section", { class: "widget" },
       el("div", { class: "w-head" }, el("h2", {}, `Books missing details (${lacking.length})`)),
       lacking.length ? bulkMatch(lacking, gaps) : el("p", { class: "muted", style: "padding:14px" }, "Every book has a cover, an author, a narrator and a description.")),
@@ -2201,10 +2210,101 @@ async function viewSettings() {
     widget("General", { wide: true, body: form }),
     widget("Transcription", { wide: true, body: transcriptionSettings() }),
     widget("Single sign-on", { wide: true, body: await oidcForm() }),
-    widget("Backup", { body: [
-      el("p", { class: "small" }, "Everything that can't be rebuilt from the audiobook folders: accounts, everyone's progress, bookmarks, playlists and listening history, collections, added libraries, saved details and covers, and these settings."),
+    widget("Backups", { wide: true, body: [
+      el("p", { class: "small" }, "Everything that can't be rebuilt from the audiobook folders: accounts, everyone's progress, bookmarks, playlists and listening history, transcripts, collections, added libraries, saved details and covers, and these settings."),
       el("p", { class: "tiny muted", style: "margin:8px 0 12px" }, "It holds password hashes: keep it somewhere safe. To restore, unzip it into the data folder of a stopped server. Devices sign in again afterwards."),
-      dl] }));
+      el("div", { class: "row" }, dl),
+      await backupsPanel()] }),
+    widget("Notifications", { wide: true, body: await hooksPanel() }));
+}
+
+// backupsPanel: daily backups, and the ones kept.
+async function backupsPanel() {
+  const st = await api("/api/backups");
+  const c = st.settings;
+  const daily = el("input", { type: "checkbox", checked: c.daily ? true : null });
+  const hour = el("select", {}, Array.from({ length: 24 }, (_, h) => el("option", { value: h, selected: h === c.hour ? true : null }, `${String(h).padStart(2, "0")}:00`)));
+  const keep = el("input", { type: "number", min: 1, max: 365, value: c.keep });
+  const dir = el("input", { type: "text", class: "mono", value: c.dir || "", placeholder: st.dir });
+  const save = el("form", { class: "form", onsubmit: async (ev) => {
+    ev.preventDefault();
+    try {
+      await api("/api/backups/settings", { method: "PUT", body: { daily: daily.checked, hour: Number(hour.value), keep: Number(keep.value), dir: dir.value.trim() } });
+      toast("Backup settings saved");
+      refreshMain(viewSettings);
+    } catch (e) { toast(e.message); }
+  } },
+  el("label", { class: "check wide small" }, daily, "Back up every day"),
+  el("label", { class: "field" }, el("span", {}, "At (server time)"), hour),
+  el("label", { class: "field" }, el("span", {}, "Keep the newest"), keep),
+  el("label", { class: "field wide" }, el("span", {}, "In the folder (the server's own; empty for backups in the data folder)"), dir),
+  el("div", { class: "wide row end" },
+    el("button", { class: "btn secondary", type: "button", onclick: async (ev) => {
+      ev.currentTarget.disabled = true;
+      try { const r = await api("/api/backups", { method: "POST" }); toast("Backed up: " + r.file); refreshMain(viewSettings); } catch (e) { toast(e.message); }
+    } }, icon("refresh"), "Back up now"),
+    el("button", { class: "btn", type: "submit" }, "Save")));
+  const download = async (name) => {
+    try {
+      const res = await api("/api/backups/" + encodeURIComponent(name), { raw: true });
+      if (!res.ok) throw new Error(res.statusText);
+      const url = URL.createObjectURL(await res.blob());
+      clickDownload(url, name);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) { toast(e.message); }
+  };
+  return el("div", { class: "stack", style: "margin-top:14px" },
+    save,
+    st.last.error ? el("p", { class: "small err" }, `The last backup failed (${fmtDateTime(st.last.at)}): ${st.last.error}`) : null,
+    st.files.length ? el("div", { class: "lines" }, st.files.map((f) => el("div", {},
+      span("t clip mono small", f.name), span("small muted", `${fmtBytes(f.size)} · ${relative(f.at)}`),
+      iconBtn("download", "Download " + f.name, () => download(f.name)),
+      iconBtn("remove", "Delete " + f.name, async () => {
+        if (!confirm(`Delete ${f.name}?`)) return;
+        try { await api("/api/backups/" + encodeURIComponent(f.name), { method: "DELETE" }); refreshMain(viewSettings); } catch (e) { toast(e.message); }
+      })))) : el("p", { class: "small muted" }, "No backups kept on the server yet."));
+}
+
+const EVENT_NAMES = {
+  "book.added": "A book is added", "transcription.finished": "A book is transcribed", "transcription.failed": "Transcribing fails",
+  "backup.finished": "A backup is made", "backup.failed": "A backup fails", "files.finished": "A merge or tag write is done",
+  "files.failed": "A merge or tag write fails", "scan.problems": "A scan can't use some files",
+};
+
+// hooksPanel: webhooks, for people who want the server to tell something else.
+async function hooksPanel() {
+  const { hooks } = await api("/api/hooks");
+  const url = el("input", { type: "text", inputmode: "url", placeholder: "https://ntfy.sh/my-topic", required: true });
+  const name = el("input", { type: "text", placeholder: "Phone, Home Assistant…", maxlength: 60 });
+  const format = el("select", {}, [["json", "JSON (scripts, Home Assistant, n8n)"], ["ntfy", "ntfy"], ["discord", "Discord"]].map(([v, l]) => el("option", { value: v }, l)));
+  const boxes = Object.entries(EVENT_NAMES).map(([id, label]) => [id, el("input", { type: "checkbox", checked: true })]);
+  const form = el("form", { class: "form", onsubmit: async (ev) => {
+    ev.preventDefault();
+    const events = boxes.filter(([, b]) => b.checked).map(([id]) => id);
+    if (!events.length) { toast("Pick at least one event"); return; }
+    try {
+      await api("/api/hooks", { method: "POST", body: { url: url.value.trim(), name: name.value.trim(), format: format.value,
+        events: events.length === boxes.length ? [] : events } });
+      toast("Notification added");
+      refreshMain(viewSettings);
+    } catch (e) { toast(e.message); }
+  } },
+  el("label", { class: "field wide" }, el("span", {}, "Address to send to"), url),
+  el("label", { class: "field" }, el("span", {}, "Name"), name),
+  el("label", { class: "field" }, el("span", {}, "Format"), format),
+  el("div", { class: "wide chips-col" }, boxes.map(([id, b]) => el("label", { class: "check small" }, b, EVENT_NAMES[id]))),
+  el("div", { class: "wide row end" }, el("button", { class: "btn", type: "submit" }, icon("add"), "Add")));
+  return el("div", { class: "stack" },
+    el("p", { class: "small" }, "The server can tell something else when things happen: a phone through ntfy, a Discord channel, or anything that takes a web request (JSON with the event, a message and its details)."),
+    hooks.length ? el("div", { class: "lines" }, hooks.map((h) => el("div", {},
+      span("t clip", el("div", { class: "strong" }, h.name || h.url), el("div", { class: "tiny muted clip" }, `${h.format} · ${h.events.length ? h.events.map((e) => EVENT_NAMES[e] || e).join(", ") : "everything"}`)),
+      el("button", { class: "btn ghost small", type: "button", onclick: async () => {
+        try { await api(`/api/hooks/${encodeURIComponent(h.id)}/test`, { method: "POST" }); toast("Sent: check that it arrived"); } catch (e) { toast("It didn't go through: " + e.message); }
+      } }, "Send a test"),
+      iconBtn("remove", "Remove", async () => {
+        try { await api(`/api/hooks/${encodeURIComponent(h.id)}`, { method: "DELETE" }); refreshMain(viewSettings); } catch (e) { toast(e.message); }
+      })))) : null,
+    form);
 }
 
 // oidcForm sets up sign-in through an identity provider (Authelia, Authentik, Keycloak
@@ -2726,6 +2826,108 @@ function drawQueue() {
       try { await api("/api/transcription/queue", { method: "DELETE" }); txWatch(); } catch (e) { toast(e.message); }
     } }, "Stop everything") : null));
   body.replaceChildren(...parts);
+}
+
+// ------------------------------------------------------------------ chapter names and file jobs
+
+// chapterNamesSheet shows the names a book's transcript suggests for its chapters,
+// ticked where the title now is only a number, and saves the ticked ones.
+async function chapterNamesSheet(b) {
+  let r;
+  try { r = await api(`/api/books/${encodeURIComponent(b.id)}/chapter-names`); } catch (e) { return toast(e.message); }
+  const back = { onBack: () => openBook(b.id) };
+  if (!r.suggestions.length) {
+    return openSheet("Name chapters · " + b.title, [emptyNote(r.transcribed ?
+      "The transcript has nothing better than the names the chapters have." :
+      "Chapter names come from what the narrator says at the start of each chapter, so the book needs a transcript first.")], back);
+  }
+  const rows = r.suggestions.map((sg) => ({ sg, box: el("input", { type: "checkbox", checked: sg.generic ? true : null, "aria-label": "Use " + sg.suggested }) }));
+  const save = el("button", { class: "btn", type: "button", onclick: async () => {
+    const use = new Map(rows.filter((x) => x.box.checked).map((x) => [x.sg.index, x.sg.suggested]));
+    if (!use.size) return toast("Nothing ticked");
+    try {
+      const updated = await api(`/api/books/${encodeURIComponent(b.id)}/chapters`, { method: "PUT", body: {
+        chapters: b.chapters.map((c, i) => ({ title: use.get(i) ?? c.title, startMs: c.startMs })) } });
+      replaceBook(updated);
+      toast(`Renamed ${plural(use.size, "chapter")}`);
+      openBook(b.id);
+    } catch (e) { toast(e.message); }
+  } }, icon("check"), "Use the ticked names");
+  openSheet("Name chapters · " + b.title, [
+    el("p", { class: "small muted" }, "From what the narrator says at the start of each chapter. Ticked: chapters whose name is only a number."),
+    el("div", { class: "lines" }, rows.map(({ sg, box }) => el("label", { class: "name-row" }, box,
+      span("n", sg.index + 1), span("t", span("muted strike", sg.current), " → ", span("strong", sg.suggested))))),
+    el("div", { class: "row end" }, save)], back);
+}
+
+// nameChaptersMany renames, in each book, the chapters that are only a number, when
+// its transcript says better.
+async function nameChaptersMany(books) {
+  let renamed = 0, touched = 0;
+  for (const b of books) {
+    const r = await api(`/api/books/${encodeURIComponent(b.id)}/chapter-names`);
+    const use = new Map(r.suggestions.filter((sg) => sg.generic).map((sg) => [sg.index, sg.suggested]));
+    if (!use.size) continue;
+    const updated = await api(`/api/books/${encodeURIComponent(b.id)}/chapters`, { method: "PUT", body: {
+      chapters: b.chapters.map((c, i) => ({ title: use.get(i) ?? c.title, startMs: c.startMs })) } });
+    replaceBook(updated);
+    renamed += use.size;
+    touched++;
+  }
+  toast(renamed ? `Renamed ${plural(renamed, "chapter")} in ${plural(touched, "book")}` : "No chapter names to change: they need transcripts, or they are named already");
+}
+
+// fileJobSheet offers the changes to books' audio files: their details written into
+// them, or several files merged into one m4b.
+function fileJobSheet(books) {
+  const mergeable = books.filter((b) => b.files.length > 1);
+  const wipe = el("input", { type: "checkbox" });
+  const queue = async (kind, list, body) => {
+    let n = 0;
+    for (const b of list) {
+      try { await api(`/api/books/${encodeURIComponent(b.id)}/files/${kind}`, { method: "POST", body }); n++; } catch (e) { toast(`${b.title}: ${e.message}`); }
+    }
+    if (n) { toast(`Queued ${plural(n, "book")}; Maintenance shows how it goes`); dialog.close(); }
+  };
+  const one = books.length === 1 ? books[0] : null;
+  openSheet(one ? "Change the files · " + one.title : `Change the files of ${plural(books.length, "book")}`, [
+    el("div", { class: "panel stack" },
+      el("div", { class: "strong" }, "Write the details into the files"),
+      el("p", { class: "small" }, "Title, author, narrator, series, description, chapters and cover, as shown here, go into the audio files themselves, so they are right in any other player too. m4b, m4a, mp3, FLAC and Ogg; other formats are left alone."),
+      el("div", { class: "row end" }, el("button", { class: "btn secondary", type: "button", onclick: () => queue("tags", books, {}) }, icon("edit"), "Write the details"))),
+    el("div", { class: "panel stack" },
+      el("div", { class: "strong" }, "Merge into one m4b"),
+      mergeable.length ? [
+        el("p", { class: "small" }, `${one ? "Its " + plural(one.files.length, "file") + " become" : plural(mergeable.length, "book") + " with several files each become"} one m4b with chapters, details and cover. The audio is copied as it is when it is already AAC, or encoded to AAC otherwise. Places, bookmarks and transcripts carry over.`),
+        el("label", { class: "check small" }, wipe, "Delete the old files afterwards (otherwise they are moved into .originals in the book's folder)"),
+        el("div", { class: "row end" }, el("button", { class: "btn secondary", type: "button", onclick: () => {
+          if (wipe.checked && !confirm("Delete the old files once the merged one is checked? This can't be undone.")) return;
+          queue("merge", mergeable, { deleteOriginals: wipe.checked });
+        } }, icon("files"), "Merge"))] :
+        el("p", { class: "small muted" }, one ? "It is one file already." : "None of these has more than one file.")),
+  ], one ? { onBack: () => openBook(one.id) } : {});
+}
+
+// fileJobsPanel shows file jobs in progress and the last few, on Maintenance.
+async function fileJobsPanel() {
+  const box = el("section", { class: "widget", style: "margin-bottom:12px" });
+  const title = (id) => state.books.find((b) => b.id === id)?.title || "A removed book";
+  const verb = (k) => k === "merge" ? "Merging" : "Writing the details into";
+  const draw = async () => {
+    let st;
+    try { st = await api("/api/files/jobs"); } catch { return false; }
+    box.replaceChildren(el("div", { class: "w-head" }, el("h2", {}, "File jobs")), el("div", { class: "w-body full stack" },
+      st.running ? el("div", { class: "stack" }, span("small", `${verb(st.running.kind)} ${title(st.running.bookId)}`), gradientProgress(st.running.progress)) : null,
+      st.queue.length ? span("small muted", `${plural(st.queue.length, "more book")} waiting`) : null,
+      st.recent.length ? el("div", { class: "lines" }, st.recent.map((r) => el("div", {},
+        span(r.ok ? "n" : "n err", r.ok ? "✓" : "✕"), span("t", el("div", { class: "strong clip" }, r.title || title(r.bookId)), el("div", { class: "tiny " + (r.ok ? "muted" : "err") }, r.note)),
+        span("end", relative(r.at))))) : null,
+      !st.running && !st.queue.length && !st.recent.length ? el("p", { class: "small muted" }, "None yet. Merge a book or write its details into its files from its page, or tick books in the library.") : null));
+    return !!(st.running || st.queue.length);
+  };
+  const loop = async () => { if (await draw() && box.isConnected) setTimeout(loop, 2000); };
+  await loop();
+  return box;
 }
 
 // ------------------------------------------------------------------ collections and playlists

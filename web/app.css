@@ -444,3 +444,9 @@ tr.picked td { background: color-mix(in srgb, var(--secondary-container) 45%, tr
 .match-pick { min-width: 0; max-width: 260px; }
 .match-pick .tiny { overflow-wrap: anywhere; }
 .kv dd:has(.people) { white-space: normal; }
+
+/* chapter names, notifications */
+.name-row { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); font-size: 12px; cursor: pointer; }
+.name-row:first-child { border-top: 0; }
+.strike { text-decoration: line-through; }
+.chips-col { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 14px; }
