@@ -207,10 +207,13 @@ between the app and **this server**. The server does its own PKCE with the provi
    `{ "token", "user", "role" }`, the same as `POST /api/auth`. The code works once,
    within 2 minutes, and only with the matching verifier. Otherwise the answer is `401`.
 
-Register the `kithara` URL scheme on both platforms. Accounts are matched by the
-provider's subject after the first sign-in. If the provider doesn't know someone,
-they get the error "there is no account here for you" unless the admin turned on
-automatic accounts.
+Register the `kithara` URL scheme on both platforms. An existing account is linked
+once by its owner (from the web page's Account page, or in the app: while signed in,
+`POST /api/oidc/link` returns a `code`; add `&link=<code>` to the start address, and the
+sign-in that follows links this account). After that, the provider's sign-in reaches
+it. Someone with no account here gets the error to show, unless the admin turned on
+automatic accounts. `GET /api/me` has `sso: true` once an account is linked, and
+`DELETE /api/me/oidc` unlinks it.
 
 ## 9. Transcripts
 
@@ -231,12 +234,16 @@ GET /api/books/{bookId}/transcript
   server's bigger ones). It is gzipped for clients that accept it.
 - **Asking the server to transcribe:** `POST /api/books/{bookId}/transcribe` with
   `{}` (every chapter not yet done) or `{"chapters": [3]}`. `DELETE` on the same path
-  stops it. `GET /api/transcription` shows `running` (`bookId`, `chapter`, `progress`
+  stops what this user queued. `{"again": true}` (redo finished chapters) is for admins
+  only, and a listener may have up to 2,000 chapters waiting. `GET /api/transcription`
+  shows `running` (`bookId`, `chapter`, `progress`
   from 0 to 1) and `queue`. Poll it every few seconds while the book's transcript
   screen is open.
 - **Sending up a phone's transcript:** `PUT /api/books/{bookId}/transcript/chapters/{index}`
   with `{ "status", "model", "engine": "sherpa-onnx", "passages": [ { "startMs", "endMs", "text" } ] }`.
-  It replaces that chapter's passages. A chapter that is already `DONE` on the server
+  It replaces that chapter's passages. Text is capped at about 40 characters per second
+  of the chapter, which real speech never comes near. A chapter that is already `DONE`
+  on the server
   answers `409` (only an admin may replace it), so check `chapters` first and don't
   upload over a finished one.
 - `GET /api/transcripts/search?q=…&bookId=…` searches on the server. The app can keep

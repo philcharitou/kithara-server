@@ -332,12 +332,14 @@ function renderSignIn(message = "") {
 const SSO_KEY = "kithara.sso";
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-async function ssoStart(remember) {
+async function ssoStart(remember, link = "") {
   if (!crypto.subtle) throw new Error("Single sign-on needs this page opened over https.");
   const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   sessionStorage.setItem(SSO_KEY, JSON.stringify({ verifier, remember }));
-  location.href = "/api/oidc/start?" + new URLSearchParams({ challenge, device: browserName() });
+  const q = new URLSearchParams({ challenge, device: browserName() });
+  if (link) q.set("link", link);
+  location.href = "/api/oidc/start?" + q;
 }
 
 // ssoReturn finishes a sign-in the provider sent back, if this load is one. It returns
@@ -1714,7 +1716,29 @@ async function viewAccount() {
       el("p", { class: "small muted", style: "margin-top:10px" }, "Kept in this browser."),
     ] }),
     widget("Password", { wide: true, body: [pw, el("p", { class: "tiny muted", style: "margin-top:8px" }, "Changing it signs out your other devices; this browser stays signed in.")] }),
-    widget("Devices", { body: [el("p", { class: "small muted" }, "Lost a phone? Sign it out here, or pick it on the Devices page."), el("div", { style: "margin-top:12px" }, everywhere)] }));
+    widget("Devices", { body: [el("p", { class: "small muted" }, "Lost a phone? Sign it out here, or pick it on the Devices page."), el("div", { style: "margin-top:12px" }, everywhere)] }),
+    await ssoWidget(me));
+}
+
+// ssoWidget links this account to the identity provider, when the server has one: the
+// owner signs in there once from here, and from then on that sign-in reaches this account.
+async function ssoWidget(me) {
+  const o = await api("/api/oidc").catch(() => null);
+  if (!o?.enabled) return null;
+  const link = el("button", { class: "btn secondary", type: "button", onclick: async () => {
+    try {
+      const { code } = await api("/api/oidc/link", { method: "POST" });
+      await ssoStart(!!storage()?.getItem(TOKEN_KEY), code);
+    } catch (e) { toast(e.message); }
+  } }, icon("person"), "Link single sign-on");
+  const unlink = el("button", { class: "btn ghost", type: "button", onclick: async () => {
+    if (!confirm("Unlink this account from single sign-on? You can still sign in with your password.")) return;
+    try { await api("/api/me/oidc", { method: "DELETE" }); toast("Unlinked"); render(); } catch (e) { toast(e.message); }
+  } }, "Unlink");
+  return widget("Single sign-on", { body: [
+    el("p", { class: "small" }, me.sso ? "This account is linked: “" + o.buttonText + "” signs you in to it." : "Link this account so that “" + o.buttonText + "” signs you in to it. You sign in at the provider once to do it."),
+    el("div", { class: "row", style: "margin-top:12px" }, me.sso ? unlink : link),
+  ] });
 }
 
 // ------------------------------------------------------------------ upload (admin)
@@ -1956,6 +1980,7 @@ async function oidcForm() {
   const claim = input(c.usernameClaim, { placeholder: "preferred_username" });
   const button = input(c.buttonText, { placeholder: "Sign in with single sign-on", maxlength: 40 });
   const auto = el("input", { type: "checkbox", checked: c.autoCreate ? true : null });
+  const byName = el("input", { type: "checkbox", checked: c.matchByName ? true : null });
   const callback = el("code", { class: "mono small" });
   const showCallback = () => { callback.textContent = (publicUrl.value.trim() || location.origin).replace(/\/+$/, "") + "/api/oidc/callback"; };
   publicUrl.addEventListener("input", showCallback);
@@ -1967,7 +1992,7 @@ async function oidcForm() {
   return el("form", { class: "form", onsubmit: (ev) => {
     ev.preventDefault();
     save({ issuer: issuer.value, clientId: clientId.value, clientSecret: secret.value, publicUrl: publicUrl.value || location.origin,
-      usernameClaim: claim.value, buttonText: button.value, autoCreate: auto.checked });
+      usernameClaim: claim.value, buttonText: button.value, autoCreate: auto.checked, matchByName: byName.checked });
   } },
   el("p", { class: "wide small" }, "Let people sign in with an identity provider as well as a password. Register Kithara with the provider as a web app using this redirect address: ", callback),
   el("label", { class: "field" }, el("span", {}, "Issuer"), issuer),
@@ -1977,7 +2002,8 @@ async function oidcForm() {
   el("label", { class: "field" }, el("span", {}, "Claim holding the user name"), claim),
   el("label", { class: "field" }, el("span", {}, "Button text"), button),
   el("label", { class: "check wide small" }, auto, "Make an account for someone the provider knows but this server doesn't (as a listener who sees every library)"),
-  el("p", { class: "wide tiny muted" }, "People are matched to accounts by user name the first time, then by the provider's own id for them. Use a claim the provider controls, not one people can set themselves."),
+  el("label", { class: "check wide small" }, byName, "Link listener accounts by user name the first time their owner signs in (never admins)"),
+  el("p", { class: "wide tiny muted" }, "Existing accounts are linked by their owners, from their Account page. Once linked, people are matched by the provider's own id for them, even if their name changes there. Only link by name if nobody can choose their own user name at the provider."),
   el("div", { class: "wide row end" },
     c.issuer ? el("button", { class: "btn ghost", type: "button", onclick: () => save({ issuer: "" }) }, "Turn off") : null,
     el("button", { class: "btn", type: "submit" }, "Save")));
@@ -2200,7 +2226,7 @@ function transcriptionSettings() {
       try {
         await api("/api/settings/transcription", { method: "PUT", body: { model: model.value, threads: Number(threads.value), language: english() ? "" : lang.value.trim() } });
         toast("Transcription settings saved");
-        draw();
+        refresh();
       } catch (e) { toast(e.message); }
     } },
     el("label", { class: "field" }, el("span", {}, "Model"), model),
@@ -2213,15 +2239,15 @@ function transcriptionSettings() {
       dl ? (dl.error ? span("small err grow", "Download failed: " + dl.error) : el("div", { class: "grow stack" }, span("small", `Downloading ${cur.label}: ${fmtBytes(dl.got)} of ${fmtBytes(dl.total)}`), gradientProgress(dl.total ? dl.got / dl.total : 0))) :
         span("small grow " + (st.ready ? "" : "err"), st.ready ? `${cur.label} is downloaded and ready.` : `${cur.label} isn't downloaded yet; nothing is transcribed until it is.`),
       !st.ready && (!dl || dl.error) ? el("button", { class: "btn secondary small", type: "button", onclick: async () => {
-        try { await api(`/api/transcription/models/${encodeURIComponent(s.model)}`, { method: "POST" }); draw(); } catch (e) { toast(e.message); }
+        try { await api(`/api/transcription/models/${encodeURIComponent(s.model)}`, { method: "POST" }); refresh(); } catch (e) { toast(e.message); }
       } }, icon("download"), "Download " + fmtBytes(cur.sizeBytes)) : null);
 
     const whole = el("button", { class: "btn secondary small", type: "button", onclick: async () => {
       if (!confirm("Transcribe every chapter of every book not transcribed yet? On a big library this runs for days; it can be stopped at any time.")) return;
-      try { const r = await api("/api/transcription/library", { method: "POST" }); toast(`Queued ${plural(r.queued, "chapter")}`); draw(); } catch (e) { toast(e.message); }
+      try { const r = await api("/api/transcription/library", { method: "POST" }); toast(`Queued ${plural(r.queued, "chapter")}`); refresh(); } catch (e) { toast(e.message); }
     } }, icon("magic"), "Transcribe the whole library");
     const clear = el("button", { class: "btn ghost small", type: "button", onclick: async () => {
-      try { await api("/api/transcription/queue", { method: "DELETE" }); draw(); } catch (e) { toast(e.message); }
+      try { await api("/api/transcription/queue", { method: "DELETE" }); refresh(); } catch (e) { toast(e.message); }
     } }, "Stop and clear the queue");
     const waiting = st.queue.length;
     box.replaceChildren(
@@ -2236,8 +2262,14 @@ function transcriptionSettings() {
       el("p", { class: "tiny muted", style: "margin-top:8px" }, st.vad ? "Speech is found with whisper.cpp's voice-activity detector, so passages begin where speech does." : "This whisper.cpp has no voice-activity detector; passages follow Whisper's own timing."));
     return !!(st.running || waiting || dl && !dl.error);
   };
-  const loop = async () => { if (box.isConnected && await draw()) setTimeout(loop, 2000); };
-  draw().then((busy) => { if (busy) setTimeout(loop, 2000); });
+  // Poll while something is happening; an action starts polling again.
+  let polling = false;
+  const loop = async () => {
+    if (await draw() && box.isConnected) setTimeout(loop, 2000);
+    else polling = false;
+  };
+  const refresh = () => { if (!polling) { polling = true; loop(); } else draw(); };
+  refresh();
   return box;
 }
 

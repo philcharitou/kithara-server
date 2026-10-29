@@ -195,11 +195,11 @@ func (p *fakeProvider) idToken() string {
 }
 
 // oidcSignIn runs the flow as an app would, returning the token or the error sent back.
-func oidcSignIn(t *testing.T, ts *httptest.Server) (token, errMsg string) {
+func oidcSignIn(t *testing.T, ts *httptest.Server, extra string) (token, errMsg string) {
 	t.Helper()
 	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	verifier := strings.Repeat("v", 50)
-	next := ts.URL + "/api/oidc/start?redirect=kithara://oidc&challenge=" + pkceChallenge(verifier)
+	next := ts.URL + "/api/oidc/start?redirect=kithara://oidc&challenge=" + pkceChallenge(verifier) + extra
 	for !strings.HasPrefix(next, "kithara:") {
 		res, err := noFollow.Get(next)
 		if err != nil {
@@ -233,40 +233,77 @@ func TestOIDCSignIn(t *testing.T) {
 	ts, srv, st, _ := twoLibraryServer(t)
 	p := newFakeProvider(t)
 	admin := loginAs(t, ts, "phil", "correct horse", "laptop")
-	res, body := call(t, ts, "PUT", "/api/settings/oidc", admin, OIDCConfig{Issuer: p.URL, ClientID: "kithara", ClientSecret: "s3cret", PublicURL: ts.URL})
-	if res.StatusCode != 200 || strings.Contains(string(body), "s3cret") {
-		t.Fatalf("settings: %d %s", res.StatusCode, body)
+	set := func(c OIDCConfig) {
+		t.Helper()
+		res, body := call(t, ts, "PUT", "/api/settings/oidc", admin, c)
+		if res.StatusCode != 200 || strings.Contains(string(body), "s3cret") {
+			t.Fatalf("settings: %d %s", res.StatusCode, body)
+		}
 	}
+	set(OIDCConfig{Issuer: p.URL, ClientID: "kithara", ClientSecret: "s3cret", PublicURL: ts.URL})
 
-	// An existing account, found by name and then bound to the provider's subject.
-	token, msg := oidcSignIn(t, ts)
-	if msg != "" || st.userFor(token) != "kid" {
-		t.Fatalf("sign-in: %q", msg)
+	// Nobody is linked by name unless the admin says so...
+	if _, msg := oidcSignIn(t, ts, ""); msg == "" {
+		t.Fatal("an existing account was taken by name")
 	}
-	p.name = "phil" // renamed at the provider: still the kid, by subject
-	if token, _ := oidcSignIn(t, ts); st.userFor(token) != "kid" {
+	c := srv.oidc.config()
+	c.MatchByName, c.ClientSecret = true, ""
+	set(c)
+	if srv.oidc.config().ClientSecret != "s3cret" {
+		t.Fatal("an empty secret cleared the saved one")
+	}
+	// ...and even then, never an admin.
+	p.name = "phil"
+	if _, msg := oidcSignIn(t, ts, ""); msg == "" {
+		t.Fatal("an admin account was taken by name")
+	}
+	// A listener, by name, then by subject after a rename at the provider.
+	p.name = "kid"
+	if token, msg := oidcSignIn(t, ts, ""); msg != "" || st.userFor(token) != "kid" {
+		t.Fatalf("sign-in by name: %q", msg)
+	}
+	p.name = "someone-else"
+	if token, _ := oidcSignIn(t, ts, ""); st.userFor(token) != "kid" {
 		t.Fatal("not found by subject")
 	}
 	// Someone else claiming the kid's name gets nowhere; nor does a stranger.
 	p.sub, p.name = "intruder", "kid"
-	if _, msg := oidcSignIn(t, ts); msg == "" {
+	if _, msg := oidcSignIn(t, ts, ""); msg == "" {
 		t.Fatal("a second subject took over an account")
 	}
 	p.name = "newcomer"
-	if _, msg := oidcSignIn(t, ts); msg == "" {
+	if _, msg := oidcSignIn(t, ts, ""); msg == "" {
 		t.Fatal("an unknown name signed in without autoCreate")
 	}
-	c := srv.oidc.config()
-	c.AutoCreate, c.ClientSecret = true, ""
-	call(t, ts, "PUT", "/api/settings/oidc", admin, c)
-	if srv.oidc.config().ClientSecret != "s3cret" {
-		t.Fatal("an empty secret cleared the saved one")
+	// The admin links their own account from its page; after that the provider signs
+	// them in to it.
+	var link struct{ Code string }
+	_, body := call(t, ts, "POST", "/api/oidc/link", admin, nil)
+	json.Unmarshal(body, &link)
+	p.sub, p.name = "phil-at-idp", "whatever"
+	if token, msg := oidcSignIn(t, ts, "&link="+link.Code); msg != "" || st.userFor(token) != "phil" {
+		t.Fatalf("linking: %q", msg)
 	}
-	if token, _ := oidcSignIn(t, ts); st.userFor(token) != "newcomer" || st.accountQuick("newcomer").admin() {
+	if token, _ := oidcSignIn(t, ts, ""); st.userFor(token) != "phil" {
+		t.Fatal("not signed in to the linked account")
+	}
+	if _, msg := oidcSignIn(t, ts, "&link="+link.Code); msg == "" {
+		t.Fatal("a link code worked twice")
+	}
+	// autoCreate makes a plain account, and never touches an existing one.
+	c = srv.oidc.config()
+	c.AutoCreate, c.MatchByName, c.ClientSecret = true, false, ""
+	set(c)
+	p.sub, p.name = "new-1", "newcomer"
+	if token, _ := oidcSignIn(t, ts, ""); st.userFor(token) != "newcomer" || st.accountQuick("newcomer").admin() {
 		t.Fatal("autoCreate")
 	}
+	p.sub, p.name = "new-2", "Newcomer"
+	if _, msg := oidcSignIn(t, ts, ""); msg == "" {
+		t.Fatal("autoCreate reused an existing account")
+	}
 	p.tamper, p.sub = true, "abc-123"
-	if _, msg := oidcSignIn(t, ts); msg == "" {
+	if _, msg := oidcSignIn(t, ts, ""); msg == "" {
 		t.Fatal("a forged signature was accepted")
 	}
 }

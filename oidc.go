@@ -52,6 +52,7 @@ type OIDCConfig struct {
 	PublicURL     string `json:"publicUrl"`               // how browsers reach this server, e.g. https://books.example.com
 	UsernameClaim string `json:"usernameClaim,omitempty"` // default preferred_username
 	AutoCreate    bool   `json:"autoCreate,omitempty"`
+	MatchByName   bool   `json:"matchByName,omitempty"` // link unlinked listener accounts by name on first sign-in
 	ButtonText    string `json:"buttonText,omitempty"`
 }
 
@@ -75,12 +76,18 @@ type oidcPending struct {
 	nonce, verifier string // ours, with the provider
 	challenge       string // the caller's, with us
 	target, device  string
+	link            string // the account being linked, when it is that
 	at              time.Time
 }
 
 type oidcCode struct {
 	user, device, challenge string
 	at                      time.Time
+}
+
+type oidcLink struct {
+	user string
+	at   time.Time
 }
 
 type oidcDiscovery struct {
@@ -99,11 +106,14 @@ type oidcBox struct {
 	keysAt  time.Time
 	pending map[string]oidcPending // state -> sign-in under way
 	codes   map[string]oidcCode    // one-time code -> account
+	links   map[string]oidcLink    // one-time link code -> the account asking to be linked
+	starts  *loginLimiter          // sign-ins begun per address
 	client  *http.Client
 }
 
 func (s *server) loadOIDC() {
 	b := &oidcBox{path: filepath.Join(s.store.dir, "oidc.json"), pending: map[string]oidcPending{}, codes: map[string]oidcCode{},
+		links: map[string]oidcLink{}, starts: newLoginLimiter(30, 10*time.Minute),
 		client: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if err := readJSON(b.path, &b.cfg); err != nil {
 		log.Printf("oidc.json: %v", err)
@@ -256,19 +266,36 @@ func (s *server) oidcStart(w http.ResponseWriter, r *http.Request) {
 		fail("the identity provider did not answer; try again later")
 		return
 	}
+	if wait := b.starts.try("ip:"+limitKey(clientIP(r, s.trustProxy)), time.Now()); wait > 0 {
+		fail("too many sign-ins from here; try again in a few minutes")
+		return
+	}
 	state, p := randomString(24), oidcPending{nonce: randomString(24), verifier: randomString(48),
 		challenge: challenge, target: target, device: clip(q.Get("device"), 64), at: time.Now()}
 	b.mu.Lock()
 	b.prune(time.Now())
-	full := len(b.pending) >= oidcMaxPending
-	if !full {
-		b.pending[state] = p
+	if code := q.Get("link"); code != "" {
+		l, ok := b.links[code]
+		delete(b.links, code)
+		if !ok {
+			b.mu.Unlock()
+			fail("that request to link your account has expired; start again from your Account page")
+			return
+		}
+		p.link = l.user
 	}
+	// Full: make room by dropping the oldest, rather than turning everyone away.
+	if len(b.pending) >= oidcMaxPending {
+		oldest := ""
+		for k, v := range b.pending {
+			if oldest == "" || v.at.Before(b.pending[oldest].at) {
+				oldest = k
+			}
+		}
+		delete(b.pending, oldest)
+	}
+	b.pending[state] = p
 	b.mu.Unlock()
-	if full {
-		fail("busy; try again in a moment")
-		return
-	}
 	v := url.Values{
 		"response_type": {"code"}, "client_id": {c.ClientID}, "redirect_uri": {c.PublicURL + "/api/oidc/callback"},
 		"scope": {"openid profile email"}, "state": {state}, "nonce": {p.nonce},
@@ -291,6 +318,11 @@ func (b *oidcBox) prune(now time.Time) {
 	for k, c := range b.codes {
 		if now.Sub(c.at) > oidcCodeTTL {
 			delete(b.codes, k)
+		}
+	}
+	for k, l := range b.links {
+		if now.Sub(l.at) > oidcPendingTTL {
+			delete(b.links, k)
 		}
 	}
 }
@@ -321,7 +353,7 @@ func (s *server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		fail("the identity provider's answer could not be checked")
 		return
 	}
-	user, err := s.store.oidcAccount(c, claims)
+	user, err := s.store.oidcAccount(c, claims, p.link)
 	if err != nil {
 		fail(err.Error())
 		return
@@ -639,10 +671,15 @@ func checkSignature(alg string, key crypto.PublicKey, signed, sig []byte) error 
 
 // ------------------------------------------------------------------ accounts
 
-var errNoOIDCAccount = errors.New("there is no account here for you; ask the server's admin to make one")
+var errNoOIDCAccount = errors.New("there is no account here for you; ask the server's admin to make one, or link yours from its Account page")
 
-// oidcAccount is the account an ID token's claims sign in to.
-func (s *store) oidcAccount(c OIDCConfig, claims map[string]any) (string, error) {
+// oidcAccount is the account an ID token's claims sign in to:
+//   - the account already linked to this person at the provider;
+//   - else, when this sign-in was started from an account's own page (link), that one;
+//   - else, with matchByName, a listener account of the same name not linked yet (never
+//     an admin: anyone who can choose their name at the provider could take it over);
+//   - else, with autoCreate, a new listener account of that name.
+func (s *store) oidcAccount(c OIDCConfig, claims map[string]any, link string) (string, error) {
 	sub, _ := claims["sub"].(string)
 	name, _ := claims[c.claim()].(string)
 	if sub == "" {
@@ -655,28 +692,42 @@ func (s *store) oidcAccount(c OIDCConfig, claims map[string]any) (string, error)
 	}
 	subject := c.Issuer + " " + sub
 	s.lockFresh()
-	// Bound before: the provider's own id for the person, whatever their name now.
 	for n, rec := range s.userDB {
 		if rec.Subject == subject {
 			s.mu.Unlock()
+			if link != "" && n != link {
+				return "", errors.New("you are already linked to another account here")
+			}
 			return n, nil
 		}
 	}
-	found := ""
-	for n := range s.userDB {
-		if name != "" && strings.EqualFold(n, name) {
-			found = n
-		}
-	}
-	if found != "" {
-		defer s.mu.Unlock()
-		rec := s.userDB[found]
+	bind := func(n string) (string, error) {
+		rec := s.userDB[n]
 		if rec.Subject != "" {
 			return "", errors.New("that account is linked to someone else at the identity provider")
 		}
 		rec.Subject = subject
-		s.userDB[found] = rec
-		return found, s.saveUsers()
+		s.userDB[n] = rec
+		return n, s.saveUsers()
+	}
+	if link != "" {
+		defer s.mu.Unlock()
+		if _, ok := s.userDB[link]; !ok {
+			return "", errors.New("that account no longer exists")
+		}
+		return bind(link)
+	}
+	if c.MatchByName && name != "" {
+		for n, rec := range s.userDB {
+			if !strings.EqualFold(n, name) {
+				continue
+			}
+			defer s.mu.Unlock()
+			if rec.Role == roleAdmin {
+				return "", errors.New("an admin account is linked from its own Account page, not by name")
+			}
+			return bind(n)
+		}
 	}
 	s.mu.Unlock()
 	if !c.AutoCreate || name == "" {
@@ -685,13 +736,47 @@ func (s *store) oidcAccount(c OIDCConfig, claims map[string]any) (string, error)
 	// A new plain user, with a password nobody knows (an admin can set one).
 	pw := make([]byte, 24)
 	_, _ = rand.Read(pw)
-	if err := s.setPassword(name, hex.EncodeToString(pw)); err != nil {
-		return "", errors.New("could not make an account named " + name + ": " + err.Error())
+	if err := s.addUser(name, hex.EncodeToString(pw)); err != nil {
+		return "", fmt.Errorf("could not make an account named %s (%v); if it is yours, link it from its Account page", name, err)
 	}
 	s.lockFresh()
 	defer s.mu.Unlock()
-	rec := s.userDB[name]
-	rec.Subject = subject
-	s.userDB[name] = rec
-	return name, s.saveUsers()
+	return bind(name)
+}
+
+// oidcLinkStart gives a signed-in user a one-time code to start a sign-in at the
+// provider with (?link=), which links this account to whoever signs in there.
+func (s *server) oidcLinkStart(w http.ResponseWriter, r *http.Request, user, token string) {
+	if !s.oidc.config().enabled() {
+		writeError(w, http.StatusNotFound, "sign-in through a provider is not set up")
+		return
+	}
+	code := randomString(24)
+	b := s.oidc
+	b.mu.Lock()
+	b.prune(time.Now())
+	if len(b.links) >= oidcMaxPending {
+		b.mu.Unlock()
+		writeError(w, http.StatusServiceUnavailable, "busy; try again in a moment")
+		return
+	}
+	b.links[code] = oidcLink{user: user, at: time.Now()}
+	b.mu.Unlock()
+	writeJSONResponse(w, 200, map[string]string{"code": code})
+}
+
+// oidcUnlink takes the caller's account off the identity provider.
+func (s *server) oidcUnlink(w http.ResponseWriter, r *http.Request, user, token string) {
+	st := s.store
+	st.lockFresh()
+	rec := st.userDB[user]
+	rec.Subject = ""
+	st.userDB[user] = rec
+	err := st.saveUsers()
+	st.mu.Unlock()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -150,3 +150,49 @@ func TestTranscriptUploads(t *testing.T) {
 		t.Fatalf("a passage outside its chapter: %d", res.StatusCode)
 	}
 }
+
+// Listeners cannot redo finished transcripts, and only stop what they asked for.
+func TestTranscribeRules(t *testing.T) {
+	ts, srv, _, data := twoLibraryServer(t)
+	withFakeWhisper(t, data)
+	os.Remove(filepath.Join(data, "models", "ggml-small.en.bin")) // nothing runs: jobs stay queued
+	admin := loginAs(t, ts, "phil", "correct horse", "laptop")
+	kid := loginAs(t, ts, "kid", "battery staple", "tablet")
+	b := catalogueOf(t, ts, kid, "").Books[0]
+	if res, _ := call(t, ts, "POST", "/api/books/"+b.ID+"/transcribe", kid, map[string]any{"again": true}); res.StatusCode != 403 {
+		t.Fatalf("a listener asked to redo a book: %d", res.StatusCode)
+	}
+	call(t, ts, "POST", "/api/books/"+b.ID+"/transcribe", admin, nil)
+	if _, body := call(t, ts, "DELETE", "/api/books/"+b.ID+"/transcribe", kid, nil); !strings.Contains(string(body), `"removed":0`) {
+		t.Fatalf("a listener stopped the admin's job: %s", body)
+	}
+	if _, body := call(t, ts, "DELETE", "/api/books/"+b.ID+"/transcribe", admin, nil); strings.Contains(string(body), `"removed":0`) {
+		t.Fatalf("the admin could not stop it: %s", body)
+	}
+	srv.trans.mu.Lock()
+	n := len(srv.trans.queue)
+	srv.trans.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d jobs left", n)
+	}
+}
+
+// A library given as a relative path still transcribes: ffmpeg's list needs absolute ones.
+func TestDecodeRelativeLibrary(t *testing.T) {
+	ts, srv, _, _ := twoLibraryServer(t)
+	admin := loginAs(t, ts, "phil", "correct horse", "laptop")
+	b := *srv.lib.book(bookNamed(t, catalogueOf(t, ts, admin, "").Books, "Salt and Starlight").ID)
+	wd, _ := os.Getwd()
+	b.Files = append([]File(nil), b.Files...)
+	for i := range b.Files {
+		rel, err := filepath.Rel(wd, b.Files[i].path)
+		if err != nil {
+			t.Skip("no relative path to the test library")
+		}
+		b.Files[i].path = rel
+	}
+	wav := filepath.Join(t.TempDir(), "x.wav")
+	if err := decodeRange(context.Background(), &b, 0, 2000, wav); err != nil {
+		t.Fatal(err)
+	}
+}

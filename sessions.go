@@ -21,6 +21,7 @@ type ListeningSession struct {
 	ID              string `json:"id"`
 	BookID          string `json:"bookId"`
 	Device          string `json:"device,omitempty"`
+	DeviceID        string `json:"deviceId,omitempty"` // for sessions a device reported
 	StartedAt       int64  `json:"startedAt"`
 	EndedAt         int64  `json:"endedAt"`
 	StartPositionMs int64  `json:"startPositionMs"`
@@ -131,8 +132,9 @@ func checkReported(ls ListeningSession, now int64) string {
 	return ""
 }
 
-// addSessions stores sessions a device reported. They have been checked.
-func (s *store) addSessions(user, device string, in []ListeningSession) error {
+// addSessions stores sessions a device reported, keyed by the device's id and the
+// session's own. They have been checked.
+func (s *store) addSessions(user, device, deviceID string, in []ListeningSession) error {
 	defer s.lockUser(user)()
 	var list []ListeningSession
 	if err := readJSON(s.sessionsPath(user), &list); err != nil {
@@ -140,12 +142,12 @@ func (s *store) addSessions(user, device string, in []ListeningSession) error {
 	}
 	at := map[string]int{}
 	for i, ls := range list {
-		if ls.Device == device {
+		if ls.DeviceID == deviceID {
 			at[ls.ID] = i
 		}
 	}
 	for _, ls := range in {
-		ls.Device = device
+		ls.Device, ls.DeviceID = device, deviceID
 		if i, ok := at[ls.ID]; ok {
 			list[i] = ls
 			continue

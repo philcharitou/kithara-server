@@ -55,6 +55,8 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("GET /api/oidc/start", s.oidcStart)
 	m.HandleFunc("GET /api/oidc/callback", s.oidcCallback)
 	m.HandleFunc("POST /api/oidc/exchange", s.oidcExchange)
+	m.HandleFunc("POST /api/oidc/link", s.withUser(s.oidcLinkStart))
+	m.HandleFunc("DELETE /api/me/oidc", s.withUser(s.oidcUnlink))
 	m.HandleFunc("GET /api/library", s.withUser(s.libraryHandler))
 	m.HandleFunc("GET /api/libraries", s.withUser(s.librariesHandler))
 	m.HandleFunc("POST /api/libraries", s.withAdmin(s.addLibraryHandler))
@@ -487,7 +489,7 @@ func (s *server) reportSessions(w http.ResponseWriter, r *http.Request, user, to
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.store.addSessions(user, s.store.tokenInfo(token).Device, in.Sessions); err != nil {
+	if err := s.store.addSessions(user, s.store.tokenInfo(token).Device, deviceID(token), in.Sessions); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -236,6 +236,15 @@ func (s *server) putChapterTranscript(w http.ResponseWriter, r *http.Request, us
 		writeError(w, http.StatusBadRequest, "status is DONE or PARTIAL, model is needed, and a chapter has at most 20,000 passages")
 		return
 	}
+	// A chapter's transcript is in proportion to its length: speech runs at about 15
+	// characters a second, so 40 leaves plenty of room and keeps a book's file bounded.
+	secs := (c.EndMs - c.StartMs) / 1000
+	maxText, maxCount := secs*40+4000, min(secs*2+100, maxChapterPassages)
+	if int64(len(in.Passages)) > maxCount {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("chapter %d is too short for %d passages", i, len(in.Passages)))
+		return
+	}
+	var text int64
 	ps := make([]Passage, 0, len(in.Passages))
 	for _, p := range in.Passages {
 		p.Text = clip(strings.TrimSpace(p.Text), maxPassageText)
@@ -247,6 +256,10 @@ func (s *server) putChapterTranscript(w http.ResponseWriter, r *http.Request, us
 			return
 		}
 		p.StartMs, p.EndMs = max(p.StartMs, c.StartMs), min(p.EndMs, c.EndMs)
+		if text += int64(len(p.Text)); text > maxText {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("that is more text than chapter %d could hold", i))
+			return
+		}
 		ps = append(ps, p)
 	}
 	if !s.acct(user).admin() {

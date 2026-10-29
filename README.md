@@ -154,12 +154,14 @@ as a web app (confidential, or public with PKCE), with the redirect address
 the web page: the issuer, the client id and secret, and the address browsers reach this
 server at.
 
-The first time someone signs in, they're matched to the account whose user name equals
-the provider's `preferred_username` claim (or another claim you choose). From then on,
-they're matched by the provider's own id for them, even if their name changes there.
-Someone the provider knows but this server doesn't is turned away. If you tick
-"make an account", they get a new plain account instead. Pick a claim the provider
-controls, not one people can edit themselves.
+An existing account is linked by its owner: on the **Account** page, **Link single
+sign-on** sends them to the provider once, and from then on that sign-in reaches this
+account, even if their name changes there. Someone the provider knows but this server
+doesn't is turned away, unless you tick "make an account", which gives them a new plain
+account named after the provider's `preferred_username` claim (or another claim you
+choose). You can also have listener accounts linked by name on their first sign-in, but
+never admin accounts, and only do it if nobody can choose their own user name at the
+provider.
 
 ## Transcripts
 
@@ -309,10 +311,13 @@ Everything the app talks is in the protocol document. Server specifics:
   `status` DONE or PARTIAL, `model`, `engine`) and `passages` (`chapterIndex`,
   `startMs`, `endMs`, `text`), on the book's timeline. `PUT
   /api/books/{id}/transcript/chapters/{index}` with `status`, `model`, `engine` and
-  `passages` stores one chapter from an app. A chapter that is already DONE is only
-  replaced by an admin (`409` otherwise). `GET /api/transcripts/search?q=` (optionally
+  `passages` stores one chapter from an app, up to about 40 characters of text per second
+  of the chapter. A chapter that is already DONE is only replaced by an admin (`409`
+  otherwise). `GET /api/transcripts/search?q=` (optionally
   `&bookId=`) searches them. `POST /api/books/{id}/transcribe` (`chapters`, `again`)
-  queues chapters for the server, and `DELETE` on the same path stops them.
+  queues chapters for the server (`again`, redoing finished ones, is for admins; a
+  listener may have 2,000 chapters waiting), and `DELETE` on the same path stops them
+  (a listener's own; an admin's, all of the book's).
   `GET /api/transcription` shows the engine and the queue. Admins also have
   `PUT /api/settings/transcription`, `POST`/`DELETE /api/transcription/models/{id}`,
   `POST /api/transcription/library` and `DELETE /api/transcription/queue`.
@@ -333,7 +338,9 @@ Everything the app talks is in the protocol document. Server specifics:
   `?challenge=` (PKCE S256, made by the caller), `?redirect=kithara://…` for an app, and
   `?device=`. It goes through the provider and back, and ends at the page or app with a
   one-time `code`. `POST /api/oidc/exchange` with `code` and `verifier` returns a
-  token, the same as `/api/auth`. Admins set it up with `GET`/`PUT /api/settings/oidc`;
+  token, the same as `/api/auth`. To link an existing account, `POST /api/oidc/link`
+  (signed in) returns a one-time `code` to pass to start as `&link=`; `DELETE
+  /api/me/oidc` unlinks it, and `GET /api/me` says `sso: true` when linked. Admins set it up with `GET`/`PUT /api/settings/oidc`;
   the secret is never sent back.
 - `GET /api/stats?tzOffset=MINUTES` (minutes east of UTC; days begin at local midnight)
   sums those sessions: total time, time per day, per book, days listened, current and

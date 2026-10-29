@@ -55,6 +55,7 @@ type Account struct {
 	Role      string   `json:"role"`
 	Libraries []string `json:"libraries,omitempty"`
 	Devices   int      `json:"devices"`
+	SSO       bool     `json:"sso,omitempty"` // linked to someone at the identity provider
 }
 
 func (a Account) admin() bool { return a.Role == roleAdmin }
@@ -166,7 +167,7 @@ func (s *store) exists(name string) bool {
 // roleLocked is a user's account without the device count; the caller holds s.mu.
 func (s *store) roleLocked(name string) Account {
 	rec := s.userDB[name]
-	a := Account{Name: name, Role: rec.Role, Libraries: rec.Libraries}
+	a := Account{Name: name, Role: rec.Role, Libraries: rec.Libraries, SSO: rec.Subject != ""}
 	if a.Role == "" {
 		a.Role = roleUser
 	}
@@ -185,7 +186,12 @@ func (s *store) accountLocked(name string) Account {
 
 // setPassword creates a user, or changes an existing one's password. The first user
 // on a server is its admin; later ones are plain users until made otherwise.
-func (s *store) setPassword(name, password string) error {
+func (s *store) setPassword(name, password string) error { return s.putPassword(name, password, false) }
+
+// addUser creates a user, and fails if the name is taken (in any case).
+func (s *store) addUser(name, password string) error { return s.putPassword(name, password, true) }
+
+func (s *store) putPassword(name, password string, newOnly bool) error {
 	if len(password) < 8 {
 		return errors.New("use at least 8 characters")
 	}
@@ -200,6 +206,9 @@ func (s *store) setPassword(name, password string) error {
 	s.lockFresh()
 	defer s.mu.Unlock()
 	rec, exists := s.userDB[name]
+	if exists && newOnly {
+		return fmt.Errorf("there is already a user %q", name)
+	}
 	if !exists {
 		// The rules apply to new names; existing ones keep working.
 		if !userNameRe.MatchString(name) || windowsDevice.MatchString(name) {

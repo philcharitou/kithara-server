@@ -199,36 +199,70 @@ func (t *transcriber) saveQueueLocked() {
 	}
 }
 
-// enqueue adds chapters of a book (all of them for nil), skipping ones already queued
-// and, unless again, ones already transcribed. It returns how many it added.
-func (t *transcriber) enqueue(b *Book, chapters []int, again bool, by string) int {
-	chs := chapterRanges(b)
-	if chapters == nil {
-		for i := range chs {
-			chapters = append(chapters, i)
-		}
+// queueRequest is chapters of a book to transcribe (all of them for nil).
+type queueRequest struct {
+	book     *Book
+	chapters []int
+}
+
+// enqueue adds the chapters asked for, skipping ones already queued and, unless again,
+// ones already transcribed. A listener (quota > 0) may have at most quota chapters
+// waiting. It returns how many it added.
+func (t *transcriber) enqueue(reqs []queueRequest, again bool, by string, quota int) int {
+	type key struct {
+		book    string
+		chapter int
 	}
-	var tf transcriptFile
-	if !again {
-		t.s.tmu.Lock()
-		tf, _ = t.s.loadTranscript(b)
-		t.s.tmu.Unlock()
+	// Work out what is wanted first, reading transcripts without holding t.mu.
+	var want []transcribeJob
+	seen := map[key]bool{}
+	now := time.Now().UnixMilli()
+	for _, rq := range reqs {
+		chs := chapterRanges(rq.book)
+		chapters := rq.chapters
+		if chapters == nil {
+			for i := range chs {
+				chapters = append(chapters, i)
+			}
+		}
+		var tf transcriptFile
+		if !again {
+			t.s.tmu.Lock()
+			tf, _ = t.s.loadTranscript(rq.book)
+			t.s.tmu.Unlock()
+		}
+		for _, i := range chapters {
+			k := key{rq.book.ID, i}
+			if i < 0 || i >= len(chs) || seen[k] {
+				continue
+			}
+			seen[k] = true
+			if st := chapterStatus(tf, chs[i]); !again && st != nil && st.Status == statusDone {
+				continue
+			}
+			want = append(want, transcribeJob{BookID: rq.book.ID, Chapter: i, By: by, AddedAt: now})
+		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	queued, mine := map[key]bool{}, 0
+	for _, j := range t.queue {
+		queued[key{j.BookID, j.Chapter}] = true
+		if j.By == by {
+			mine++
+		}
+	}
 	n := 0
-	for _, i := range chapters {
-		if i < 0 || i >= len(chs) || len(t.queue) >= maxTranscribeQueue {
+	for _, j := range want {
+		if len(t.queue) >= maxTranscribeQueue || quota > 0 && mine >= quota {
+			break
+		}
+		if queued[key{j.BookID, j.Chapter}] {
 			continue
 		}
-		if slices.ContainsFunc(t.queue, func(j transcribeJob) bool { return j.BookID == b.ID && j.Chapter == i }) {
-			continue
-		}
-		if st := chapterStatus(tf, chs[i]); !again && st != nil && st.Status == statusDone {
-			continue
-		}
-		t.queue = append(t.queue, transcribeJob{BookID: b.ID, Chapter: i, By: by, AddedAt: time.Now().UnixMilli()})
+		t.queue = append(t.queue, j)
 		n++
+		mine++
 	}
 	if n > 0 {
 		t.saveQueueLocked()
@@ -237,15 +271,15 @@ func (t *transcriber) enqueue(b *Book, chapters []int, again bool, by string) in
 	return n
 }
 
-// drop takes a book's jobs (every job, for "") off the queue, stopping the one running
-// if it is one of them.
-func (t *transcriber) drop(bookID string) int {
+// drop takes a book's jobs (every job, for "") off the queue, only those queued by
+// "by" unless that is "", stopping the one running if it is one of them.
+func (t *transcriber) drop(bookID, by string) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	n := 0
 	kept := t.queue[:0]
 	for i, j := range t.queue {
-		if bookID == "" || j.BookID == bookID {
+		if (bookID == "" || j.BookID == bookID) && (by == "" || j.By == by) {
 			if i == 0 && t.running && t.cancel != nil {
 				t.cancel() // the runner takes it off when it stops
 				kept = append(kept, j)
@@ -262,7 +296,7 @@ func (t *transcriber) drop(bookID string) int {
 
 // next waits for a job it can run: one queued, the program installed, and the model
 // downloaded.
-func (t *transcriber) next() transcribeJob {
+func (t *transcriber) next() (transcribeJob, context.Context) {
 	for {
 		t.mu.Lock()
 		ready := len(t.queue) > 0
@@ -271,9 +305,10 @@ func (t *transcriber) next() transcribeJob {
 			t.mu.Lock()
 			if len(t.queue) > 0 {
 				j := t.queue[0]
-				t.running, t.progress = true, 0
+				ctx, cancel := context.WithCancel(context.Background())
+				t.running, t.progress, t.cancel = true, 0, cancel
 				t.mu.Unlock()
-				return j
+				return j, ctx
 			}
 			t.mu.Unlock()
 		}
@@ -291,14 +326,12 @@ func (t *transcriber) installedCurrent() bool {
 
 func (t *transcriber) run() {
 	for {
-		j := t.next()
-		ctx, cancel := context.WithCancel(context.Background())
-		t.mu.Lock()
-		t.cancel = cancel
-		t.mu.Unlock()
+		j, ctx := t.next()
 		err := t.runJob(ctx, j)
-		cancel()
 		t.mu.Lock()
+		if t.cancel != nil {
+			t.cancel()
+		}
 		t.running, t.cancel = false, nil
 		if len(t.queue) > 0 && t.queue[0] == j {
 			t.queue = t.queue[1:]
@@ -337,6 +370,12 @@ func (t *transcriber) runJob(ctx context.Context, j transcribeJob) error {
 	status := statusDone
 	if err != nil {
 		status = statusPartial
+		t.s.tmu.Lock()
+		tf, _ := t.s.loadTranscript(b)
+		t.s.tmu.Unlock()
+		if st := chapterStatus(tf, c); st != nil && st.Status == statusDone {
+			return err // keep the finished one
+		}
 	}
 	entry := transcribed{Status: status, Model: m.ID, Engine: "whisper.cpp", UpdatedAt: time.Now().UnixMilli()}
 	if serr := t.s.saveChapter(b, c, entry, ps); serr != nil {
@@ -411,7 +450,17 @@ func decodeRange(ctx context.Context, b *Book, from, to int64, wav string) error
 		if fe <= from || fs >= to {
 			continue
 		}
-		fmt.Fprintf(&list, "file '%s'\n", strings.ReplaceAll(f.path, "'", `'\''`))
+		// Absolute (the list file lives in a temporary folder, and ffmpeg resolves
+		// relative entries against it), as a file: URL so a ':' in a name is not taken
+		// for a protocol. The list is read line by line, so a line break cannot be quoted.
+		abs, err := filepath.Abs(f.path)
+		if err != nil {
+			return err
+		}
+		if strings.ContainsAny(abs, "\r\n") {
+			return fmt.Errorf("the file name %q has a line break in it", f.Name)
+		}
+		fmt.Fprintf(&list, "file 'file:%s'\n", strings.ReplaceAll(abs, "'", `'\''`))
 		if from > fs {
 			fmt.Fprintf(&list, "inpoint %.3f\n", float64(from-fs)/1000)
 		}
@@ -539,8 +588,18 @@ func (t *transcriber) fetchModel(m whisperModel) {
 	}()
 }
 
+// downloading serialises downloads of the same file (every model brings the voice
+// model with it).
+var downloading sync.Map // path -> *sync.Mutex
+
+// downloadStall is how long a download may go without a byte before it is given up.
+const downloadStall = 2 * time.Minute
+
 // download fetches url to path unless it is there already.
 func download(url, path string, progress func(got, total int64)) error {
+	mu, _ := downloading.LoadOrStore(path, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
@@ -550,7 +609,12 @@ func download(url, path string, progress func(got, total int64)) error {
 	// Hugging Face answers with a redirect to its file store; the redirect carries the
 	// file's SHA-256 as X-Linked-Etag.
 	var want string
-	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stall := time.AfterFunc(downloadStall, cancel)
+	defer stall.Stop()
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSHandshakeTimeout: 30 * time.Second, ResponseHeaderTimeout: time.Minute}
+	client := &http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 5 {
 			return errors.New("too many redirects")
 		}
@@ -559,7 +623,11 @@ func download(url, path string, progress func(got, total int64)) error {
 		}
 		return nil
 	}}
-	res, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -571,11 +639,14 @@ func download(url, path string, progress func(got, total int64)) error {
 		want = res.Header.Get("X-Linked-Etag")
 	}
 	want = strings.Trim(want, `"W/`)
-	part := path + ".part"
-	f, err := os.Create(part)
+	if len(want) != 64 {
+		return errors.New("the download came without a checksum to check it against")
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.part")
 	if err != nil {
 		return err
 	}
+	part := f.Name()
 	h := sha256.New()
 	var got int64
 	buf := bufio.NewReaderSize(res.Body, 1<<20)
@@ -583,6 +654,7 @@ func download(url, path string, progress func(got, total int64)) error {
 	for {
 		n, rerr := buf.Read(chunk)
 		if n > 0 {
+			stall.Reset(downloadStall)
 			if _, werr := f.Write(chunk[:n]); werr != nil {
 				f.Close()
 				os.Remove(part)
@@ -600,6 +672,9 @@ func download(url, path string, progress func(got, total int64)) error {
 		if rerr != nil {
 			f.Close()
 			os.Remove(part)
+			if ctx.Err() != nil {
+				return errors.New("the download stalled")
+			}
 			return rerr
 		}
 	}
@@ -611,7 +686,7 @@ func download(url, path string, progress func(got, total int64)) error {
 	switch {
 	case res.ContentLength > 0 && got != res.ContentLength:
 		err = fmt.Errorf("got %d of %d bytes", got, res.ContentLength)
-	case len(want) == 64 && !strings.EqualFold(want, sum):
+	case !strings.EqualFold(want, sum):
 		err = errors.New("the download does not match its checksum")
 	}
 	if err != nil {
@@ -768,15 +843,33 @@ func (s *server) transcribeBook(w http.ResponseWriter, r *http.Request, user, to
 		writeError(w, http.StatusConflict, "this server cannot transcribe: whisper.cpp is not installed")
 		return
 	}
-	writeJSONResponse(w, 200, map[string]int{"queued": s.trans.enqueue(b, in.Chapters, in.Again, user)})
+	// Transcripts are shared, so only an admin redoes finished ones, and a listener has
+	// a limit on how much they can have waiting.
+	quota := 0
+	if !s.acct(user).admin() {
+		if in.Again {
+			writeError(w, http.StatusForbidden, "only an admin can transcribe a book again")
+			return
+		}
+		quota = listenerQuota
+	}
+	writeJSONResponse(w, 200, map[string]int{"queued": s.trans.enqueue([]queueRequest{{b, in.Chapters}}, in.Again, user, quota)})
 }
+
+// listenerQuota is how many chapters one listener may have waiting.
+const listenerQuota = 2000
 
 func (s *server) cancelBook(w http.ResponseWriter, r *http.Request, user, token string) {
 	b := s.bookOr404(w, r, user)
 	if b == nil {
 		return
 	}
-	writeJSONResponse(w, 200, map[string]int{"removed": s.trans.drop(b.ID)})
+	// A listener stops what they asked for; an admin stops the book.
+	by := user
+	if s.acct(user).admin() {
+		by = ""
+	}
+	writeJSONResponse(w, 200, map[string]int{"removed": s.trans.drop(b.ID, by)})
 }
 
 // transcribeLibrary (admin) queues every chapter of every book not yet transcribed.
@@ -785,15 +878,15 @@ func (s *server) transcribeLibrary(w http.ResponseWriter, r *http.Request, user,
 		writeError(w, http.StatusConflict, "this server cannot transcribe: whisper.cpp is not installed")
 		return
 	}
-	n := 0
+	var reqs []queueRequest
 	for _, b := range s.lib.snapshot().Books {
 		if full := s.lib.book(b.ID); full != nil {
-			n += s.trans.enqueue(full, nil, false, user)
+			reqs = append(reqs, queueRequest{book: full})
 		}
 	}
-	writeJSONResponse(w, 200, map[string]int{"queued": n})
+	writeJSONResponse(w, 200, map[string]int{"queued": s.trans.enqueue(reqs, false, user, 0)})
 }
 
 func (s *server) clearQueue(w http.ResponseWriter, r *http.Request, user, token string) {
-	writeJSONResponse(w, 200, map[string]int{"removed": s.trans.drop("")})
+	writeJSONResponse(w, 200, map[string]int{"removed": s.trans.drop("", "")})
 }
