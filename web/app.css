@@ -413,7 +413,6 @@ input.scrub::-moz-range-thumb { width: 8px; height: 18px; border-radius: 3px; ba
 .bulk-bar { position: sticky; top: 0; z-index: 2; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--card-head); }
 .c-pick { width: 34px; }
 tr.picked td { background: color-mix(in srgb, var(--secondary-container) 45%, transparent); }
-.bulk-bar[hidden] { display: none; }
 .tile-wrap { position: relative; display: grid; }
 .tile-wrap.picked .tile { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; }
 /* Drawn by hand so it shows up on any cover: a dark box with a light edge, and the
@@ -423,20 +422,17 @@ tr.picked td { background: color-mix(in srgb, var(--secondary-container) 45%, tr
 .tile-pick:checked { background: var(--primary); border-color: var(--primary); }
 .tile-pick:checked::after { content: ""; width: 6px; height: 11px; margin-top: -2px; border: solid var(--on-primary); border-width: 0 2.5px 2.5px 0; transform: rotate(45deg); }
 .tile-pick:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.check[hidden] { display: none; }
+
 
 /* transcription in progress */
 .tx-chip { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px 0 8px; border: 1px solid var(--line-strong); border-radius: 15px; background: var(--card); color: var(--on-surface); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .tx-chip:hover { background: var(--hover); }
-.tx-chip[hidden] { display: none; }
 .tx-ring { --p: 0; width: 16px; height: 16px; border-radius: 50%; background: conic-gradient(var(--primary) calc(var(--p) * 1turn), var(--track) 0); -webkit-mask: radial-gradient(circle, transparent 4px, #000 4.5px); mask: radial-gradient(circle, transparent 4px, #000 4.5px); }
 .tx-chip.idle .tx-ring { background: var(--track); }
 .tx-mark { display: inline-flex; align-items: center; gap: 4px; margin-top: 3px; font-size: 11px; color: var(--on-surface-variant); }
-.tx-mark[hidden] { display: none; }
 .tx-mark svg.i { width: 13px; height: 13px; }
 .tx-mark.now { color: var(--primary); }
 .tx-now .cover-box { width: 64px; }
 @media (max-width: 640px) { .tx-chip-text { display: none; } .tx-chip { padding: 0 7px; } }
 .tx-banner { margin-bottom: 10px; }
-.tx-banner[hidden] { display: none; }
 .tx-banner > svg.i { color: var(--primary); flex: none; }

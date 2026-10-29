@@ -91,7 +91,6 @@ const ICONS = {
   settings: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z",
   upload: "M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z",
   image: "M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z",
-  warning: "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z",
   dark: "M12 3a9 9 0 109 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 01-4.4 2.26 5.403 5.403 0 01-3.14-9.8c-.44-.06-.9-.1-1.36-.1z",
   light: "M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0a.996.996 0 000-1.41l-1.06-1.06zm1.06-10.96a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z",
 };
@@ -183,8 +182,7 @@ async function api(path, { method = "GET", body, blob, raw = false } = {}) {
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(path, { method, headers, body: blob ?? (body === undefined ? undefined : JSON.stringify(body)) });
   if (res.status === 401 && state.token) {
-    forgetToken();
-    renderSignIn("You were signed out. Sign in again.");
+    endSession("You were signed out. Sign in again.");
     throw new ApiError(401, "signed out");
   }
   if (raw) return res;
@@ -422,12 +420,21 @@ function renderShell(current) {
 }
 
 async function signOut() {
+  stopPlayer(); // saves the place while the token still works
+  try { await api("/api/auth/logout", { method: "POST" }); } catch { /* signed out regardless */ }
+  endSession();
+}
+
+// endSession leaves everything of the signed-in user behind (the player, the
+// transcription poller, the selection, the token) and shows the sign-in page.
+function endSession(message = "") {
   stopPlayer();
   clearTimeout(txq.timer);
   txq.st = null;
-  try { await api("/api/auth/logout", { method: "POST" }); } catch { /* signed out regardless */ }
+  txq.seq++;
+  pickEnd();
   forgetToken();
-  renderSignIn();
+  renderSignIn(message);
 }
 
 function go(view) {
@@ -698,6 +705,7 @@ async function viewLibrary(tools) {
   await loadLibrary();
   pick.on = true;
   pick.listeners = [];
+  pick.header = null;
   const prefs = state.prefs;
   tools.append(el("button", { class: "btn secondary small", type: "button", onclick: searchTranscriptsSheet }, icon("search"), "Search transcripts"));
   if (isAdmin()) {
@@ -754,12 +762,10 @@ async function viewLibrary(tools) {
   drawGroup();
   layoutBtns.forEach((b) => { b.hidden = prefs.group !== "books"; });
 
-  pick.refill = fill;
   // The table has its own select-all box in its header; covers and groups use this one.
-  const allLabel = el("label", { class: "check small" }, pickAllBox(fill), "Select all");
-  const fillAll = fill;
-  fill = () => { fillAll(); allLabel.hidden = prefs.layout !== "grid" && prefs.group === "books"; };
-  pick.refill = fill;
+  const allLabel = el("label", { class: "check small" }, pickAllBox(), "Select all");
+  const fillShelf = fill;
+  fill = () => { fillShelf(); allLabel.hidden = prefs.layout !== "grid" && prefs.group === "books"; };
   fill();
   return [
     el("div", { class: "toolbar" },
@@ -778,19 +784,19 @@ function bookTable(books) {
   const multi = state.libraries.length > 1;
   return el("div", { class: "table-wrap" }, el("table", { class: "grid" },
     el("thead", {}, el("tr", {},
-      pick.on ? el("th", { class: "c-pick" }, pickAllBox(pick.refill)) : null, el("th", { class: "c-cover" }), el("th", {}, "Title"), el("th", { class: "hide-sm" }, "Author"), el("th", { class: "hide-sm" }, "Narrator"),
+      el("th", { class: "c-pick" }, pickAllBox(true)), el("th", { class: "c-cover" }), el("th", {}, "Title"), el("th", { class: "hide-sm" }, "Author"), el("th", { class: "hide-sm" }, "Narrator"),
       el("th", { class: "hide-sm" }, "Series"), multi ? el("th", { class: "hide-sm" }, "Library") : null,
       el("th", { class: "c-num" }, "Length"), el("th", { class: "c-prog" }, "Progress"))),
     el("tbody", {}, books.map((b) => {
       const p = progressOf(b);
-      const row = el("tr", { tabindex: 0, class: pick.on && pick.ids.has(b.id) ? "picked" : null, onclick: () => openBook(b.id),
+      const row = el("tr", { tabindex: 0, class: pick.ids.has(b.id) ? "picked" : null, "data-pick": b.id, onclick: () => openBook(b.id),
         onkeydown: (e) => {
           if (e.key === "Enter") openBook(b.id);
-          else if (pick.on && e.key === " ") { e.preventDefault(); pickToggle(b.id, row); }
+          else if (e.key === " ") { e.preventDefault(); pickToggle(b.id, row); }
         } },
-        pick.on ? el("td", { class: "c-pick", onclick: (e) => { e.stopPropagation(); if (e.target.tagName !== "INPUT") pickToggle(b.id, row); } },
+        el("td", { class: "c-pick", onclick: (e) => { e.stopPropagation(); if (e.target.tagName !== "INPUT") pickToggle(b.id, row); } },
           el("input", { type: "checkbox", tabindex: -1, "aria-label": "Select " + b.title, checked: pick.ids.has(b.id) ? true : null,
-            onchange: () => pickToggle(b.id, row, true) })) : null,
+            onchange: () => pickToggle(b.id, row, true) })),
         el("td", { class: "c-cover" }, cover(b)),
         el("td", {}, el("div", { class: "strong clip2" }, b.title), b.subtitle ? el("div", { class: "small muted clip" }, b.subtitle) : null, txMark(b.id)),
         el("td", { class: "hide-sm" }, b.author || span("muted", "—")),
@@ -813,7 +819,7 @@ function bookTile(b) {
     statusText(b),
     txMark(b.id));
   if (!pick.on) return tile;
-  const wrap = el("div", { class: "tile-wrap" + (pick.ids.has(b.id) ? " picked" : "") }, tile,
+  const wrap = el("div", { class: "tile-wrap" + (pick.ids.has(b.id) ? " picked" : ""), "data-pick": b.id }, tile,
     el("input", { type: "checkbox", class: "tile-pick", "aria-label": "Select " + b.title, checked: pick.ids.has(b.id) ? true : null,
       onchange: () => pickToggle(b.id, wrap, true) }));
   return wrap;
@@ -824,13 +830,28 @@ function bookTile(b) {
 // Picking books in the library: every row and cover has a checkbox, and once any is
 // ticked a bar offers what can be done to all of them at once. listeners are what to
 // update when the selection changes (the bar, the select-all boxes).
-const pick = { on: false, ids: new Set(), shown: [], listeners: [], refill: () => {} };
-// A listener answers false once its element has gone, and is dropped.
-const pickChanged = () => { pick.listeners = pick.listeners.filter((f) => f() !== false); };
+// listeners (the bar, the covers' Select all) belong to one library page and are reset
+// with it; the table's header box has a slot of its own, since the table is redrawn on
+// every filter or search.
+const pick = { on: false, ids: new Set(), shown: [], listeners: [], header: null };
+const pickChanged = () => { pick.listeners.forEach((f) => f()); pick.header?.(); };
 
 function pickEnd() {
   pick.on = false;
   pick.ids.clear();
+  pick.listeners = [];
+  pick.header = null;
+}
+
+// pickRefresh shows the selection on the books drawn, after a change to many at once.
+function pickRefresh() {
+  document.querySelectorAll("[data-pick]").forEach((n) => {
+    const on = pick.ids.has(n.dataset.pick);
+    n.classList.toggle("picked", on);
+    const box = n.querySelector("input[type=checkbox]");
+    if (box) box.checked = on;
+  });
+  pickChanged();
 }
 
 // pickToggle flips a book; fromBox when its own checkbox already shows the new state.
@@ -845,22 +866,18 @@ function pickToggle(id, node, fromBox = false) {
 
 // pickAllBox ticks every book shown (after filters and search), or none; it shows a
 // dash when only some are.
-function pickAllBox(refill) {
-  let attached = false;
+function pickAllBox(header = false) {
   const box = el("input", { type: "checkbox", "aria-label": "Select all shown", onchange: () => {
     if (box.checked) pick.shown.forEach((b) => pick.ids.add(b.id));
     else pick.shown.forEach((b) => pick.ids.delete(b.id));
-    refill();
-    pickChanged();
+    pickRefresh();
   } });
   const sync = () => {
-    if (attached && !box.isConnected) return false;
-    attached = box.isConnected;
     const n = pick.shown.filter((b) => pick.ids.has(b.id)).length;
     box.checked = n > 0 && n === pick.shown.length;
     box.indeterminate = n > 0 && n < pick.shown.length;
   };
-  pick.listeners.push(sync);
+  if (header) pick.header = sync; else pick.listeners.push(sync);
   sync();
   return box;
 }
@@ -890,25 +907,37 @@ function bulkBar(refill) {
     run([icon("queue"), "Add to a list"], (books) => addManyToList(books)),
     run([icon("check"), "Mark finished"], progressAll(true)),
     run([icon("replay"), "Mark not started"], progressAll(false)));
-  api("/api/transcription").then((st) => {
-    if (!st.available) return;
-    actions.append(run([icon("notes"), "Transcribe"], async (books) => {
-      let n = 0;
-      for (const b of books) n += (await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "POST", body: {} })).queued;
-      toast(n ? `Queued ${plural(n, "chapter")}` : "Nothing left to transcribe");
-      txWatch();
-    }));
-  }).catch(() => {});
+  // Shown when the server can transcribe (txDraw keeps it in step).
+  const transcribe = run([icon("notes"), "Transcribe"], async (books) => {
+    let n = 0;
+    for (const b of books) n += (await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "POST", body: {} })).queued;
+    toast(n ? `Queued ${plural(n, "chapter")}` : "Nothing left to transcribe");
+    txWatch();
+  });
+  transcribe.classList.add("needs-transcription");
+  transcribe.hidden = !txq.st?.available;
+  actions.append(transcribe);
   if (isAdmin()) actions.prepend(run([icon("magic"), "Find details"], (books) => openSheet(`Find details · ${plural(books.length, "book")}`, bulkMatch(books), { wide: true })));
   const bar = el("div", { class: "toolbar bulk-bar" },
     count,
-    el("button", { class: "btn ghost small", type: "button", onclick: () => { pick.ids.clear(); refill(); pickChanged(); } }, "Clear"),
+    el("button", { class: "btn ghost small", type: "button", onclick: () => { pick.ids.clear(); pickRefresh(); } }, "Clear"),
     el("span", { class: "grow" }),
     actions);
   const draw = () => { count.textContent = `${pick.ids.size} selected`; bar.hidden = !pick.ids.size; };
   pick.listeners.push(draw);
   draw();
   return bar;
+}
+
+// newPlaylistForm makes a playlist of bookIds, then calls done.
+function newPlaylistForm(bookIds, done) {
+  const name = el("input", { type: "text", placeholder: "New playlist", maxlength: 100, "aria-label": "New playlist name" });
+  return el("form", { class: "row", style: "margin-top:10px", onsubmit: async (ev) => {
+    ev.preventDefault();
+    if (!name.value.trim()) return;
+    try { await api("/api/playlists", { method: "POST", body: { name: name.value, bookIds } }); done(); }
+    catch (e) { toast(e.message); }
+  } }, el("div", { class: "grow" }, name), el("button", { class: "btn secondary", type: "submit" }, icon("add"), "Make"));
 }
 
 // addManyToList adds books to one of the user's playlists (or, for an admin, a
@@ -924,13 +953,7 @@ async function addManyToList(books) {
   const rows = (kind) => lists[kind].length ? el("div", { class: "lines" }, lists[kind].map((l) => el("div", {},
     span("t clip", l.name), span("small muted", plural(l.bookIds.length, "book")),
     el("button", { class: "btn secondary small", type: "button", onclick: () => add(kind, l).catch((e) => toast(e.message)) }, "Add")))) : emptyNote(`No ${kind} yet.`);
-  const fresh = el("input", { type: "text", placeholder: "New playlist", maxlength: 100, "aria-label": "New playlist name" });
-  const make = el("form", { class: "row", onsubmit: async (ev) => {
-    ev.preventDefault();
-    if (!fresh.value.trim()) return;
-    try { await api("/api/playlists", { method: "POST", body: { name: fresh.value, bookIds: books.map((b) => b.id) } }); toast("Playlist made"); dialog.close(); }
-    catch (e) { toast(e.message); }
-  } }, el("div", { class: "grow" }, fresh), el("button", { class: "btn secondary", type: "submit" }, icon("add"), "Make"));
+  const make = newPlaylistForm(books.map((b) => b.id), () => { toast("Playlist made"); dialog.close(); });
   openSheet(`Add ${plural(books.length, "book")} to a list`, [
     el("h3", { class: "section-title" }, "My playlists"), rows("playlists"), make,
     isAdmin() ? el("h3", { class: "section-title" }, "Collections (everyone sees these)") : null,
@@ -951,9 +974,11 @@ function openSheet(title, parts, { onBack, wide } = {}) {
   dialog.style.width = wide ? "min(900px, calc(100vw - 24px))" : "";
   if (!dialog.open) dialog.showModal();
   dialog.scrollTop = 0;
+  if (toastEl.classList.contains("show")) dialog.append(toastEl); // a toast from the sheet before stays
 }
 
 dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
+dialog.addEventListener("close", () => document.body.append(toastEl));
 
 // ------------------------------------------------------------------ one book
 
@@ -1103,6 +1128,12 @@ async function resetMetadata(b) {
 function replaceBook(updated) {
   const i = state.books.findIndex((x) => x.id === updated.id);
   if (i >= 0) state.books[i] = updated;
+  if (player.book?.id === updated.id) {
+    // Same audio, new details or chapters: the player picks them up where it is.
+    player.book = updated;
+    player.shownSec = -1;
+    drawPlayer();
+  }
   if (state.view === "library" || state.view === "dashboard") render();
 }
 
@@ -1235,7 +1266,7 @@ async function viewDevices(tools, who = state.me.name) {
     if (!confirm(d.current ? "Sign out this browser?" : `Sign out “${d.name || "this device"}”? It will ask for the password again.`)) return;
     try {
       await api(`/api/devices/${encodeURIComponent(d.id)}${q}`, { method: "DELETE" });
-      if (d.current) { forgetToken(); renderSignIn(); return; }
+      if (d.current) { endSession(); return; }
       toast("Signed out");
       refreshMain((t) => viewDevices(t, who));
     } catch (e) { toast(e.message); }
@@ -1415,7 +1446,11 @@ const player = {
   saveAt: 0,
   sleepAt: 0, // epoch ms, or -1 for the end of the chapter
   done: false, // the book ran to its end: later saves keep it finished
-  bar: null,
+  speed: 1,
+  framing: false, // an animation-frame loop is running (playerFrame)
+  // The bar and what is drawn in it.
+  bar: null, drawn: null, scrub: null, times: null, chapter: null, sleep: null,
+  shownSec: -1, shownBook: null, // what the time text last showed (updatePlayerTime)
 };
 player.audio.preload = "auto";
 
@@ -1521,12 +1556,16 @@ player.audio.addEventListener("ended", () => {
 });
 // Loading the next file pauses the element for a moment; that is not the listener pausing.
 player.audio.addEventListener("pause", () => { if (player.pendingSeek != null) return; if (!player.audio.ended) saveProgress(); drawPlayer(); });
-player.audio.addEventListener("play", () => { drawPlayer(); requestAnimationFrame(playerFrame); });
+player.audio.addEventListener("play", () => {
+  drawPlayer();
+  if (!player.framing) { player.framing = true; requestAnimationFrame(playerFrame); }
+});
 
 // playerFrame moves the timeline every frame while playing; the audio element itself
-// only reports its time a few times a second, which made the playhead hop.
+// only reports its time a few times a second, which made the playhead hop. One loop
+// runs at a time (player.framing).
 function playerFrame() {
-  if (!player.book || player.audio.paused) return;
+  if (!player.book || player.audio.paused) { player.framing = false; return; }
   updatePlayerTime();
   requestAnimationFrame(playerFrame);
 }
@@ -1652,10 +1691,16 @@ function updatePlayerTime() {
   const pos = playerPosition();
   if (!player.scrub.dataset.dragging) player.scrub.value = pos;
   player.scrub.style.setProperty("--p", (pos / b.durationMs).toFixed(5)); // the CSS puts the fill under the thumb
-  player.times.firstChild.textContent = fmtClock(pos);
-  player.times.lastChild.textContent = "-" + fmtClock(b.durationMs - pos);
-  const i = currentChapterAt(b, pos);
-  player.chapter.textContent = i >= 0 ? `${b.chapters[i].title} · ${i + 1} of ${b.chapters.length}` : `${fmtDuration(b.durationMs - pos)} left`;
+  // The rest changes once a second at most: only touch the page when it does.
+  const sec = Math.floor(pos / 1000);
+  if (sec !== player.shownSec || b !== player.shownBook) {
+    player.shownSec = sec;
+    player.shownBook = b;
+    player.times.firstChild.textContent = fmtClock(pos);
+    player.times.lastChild.textContent = "-" + fmtClock(b.durationMs - pos);
+    const i = currentChapterAt(b, pos);
+    player.chapter.textContent = i >= 0 ? `${b.chapters[i].title} · ${i + 1} of ${b.chapters.length}` : `${fmtDuration(b.durationMs - pos)} left`;
+  }
   followTranscript(pos);
 }
 
@@ -1905,8 +1950,8 @@ function uploadSheet(libName) {
       queue.push({ file, rel, row });
       list.append(row);
     }
-    go.disabled = !queue.length;
-    go.lastChild.textContent = `Upload ${plural(queue.length, "file")}`;
+    send.disabled = !queue.length;
+    send.lastChild.textContent = `Upload ${plural(queue.length, "file")}`;
   };
   const filesIn = el("input", { type: "file", multiple: true, style: "display:none", onchange: () => addFiles([...filesIn.files].map((f) => ({ file: f, rel: f.name }))) });
   const dirIn = el("input", { type: "file", multiple: true, webkitdirectory: true, style: "display:none", onchange: () => addFiles([...dirIn.files].map((f) => ({ file: f, rel: f.webkitRelativePath || f.name }))) });
@@ -1919,8 +1964,8 @@ function uploadSheet(libName) {
       el("button", { class: "btn secondary small", type: "button", onclick: () => dirIn.click() }, "Choose a folder"),
       el("button", { class: "btn secondary small", type: "button", onclick: () => filesIn.click() }, "Choose files")),
     filesIn, dirIn);
-  const go = el("button", { class: "btn", type: "button", disabled: true, onclick: async () => {
-    go.disabled = true;
+  const send = el("button", { class: "btn", type: "button", disabled: true, onclick: async () => {
+    send.disabled = true;
     const prefix = folder.value.trim().replace(/^\/+|\/+$/g, "");
     let ok = 0, failed = 0;
     for (const item of queue) {
@@ -1939,7 +1984,7 @@ function uploadSheet(libName) {
       el("label", { class: "field" }, el("span", {}, "Into folder"), folder)),
     drop, list,
     el("p", { class: "tiny muted" }, "Audio, cover pictures and metadata files (.opf, metadata.json, desc.txt) are accepted. Existing files are not overwritten. The library is rescanned when the upload is done."),
-    el("div", { class: "row end" }, el("button", { class: "btn secondary", type: "button", onclick: () => dialog.close() }, "Close"), go),
+    el("div", { class: "row end" }, el("button", { class: "btn secondary", type: "button", onclick: () => dialog.close() }, "Close"), send),
   ]);
 }
 
@@ -2209,27 +2254,39 @@ async function loadTranscript(bookId) {
   return api(`/api/books/${encodeURIComponent(bookId)}/transcript`);
 }
 
+// transcriptPanel shows where a book's transcript stands. The transcript is fetched once,
+// and again when one of its chapters finishes; progress comes from the shared poller
+// (txDraw calls redraw), so the panel does no polling of its own.
 function transcriptPanel(b) {
-  const box = el("div", { class: "panel stack" }, span("small muted", "Transcript: loading…"));
-  const draw = async () => {
-    const [tx, st] = await Promise.all([loadTranscript(b.id), api("/api/transcription")]).catch(() => [null, null]);
-    if (!tx) return box.replaceChildren(span("small muted", "Transcript: could not load"));
+  const box = el("div", { class: "panel stack tx-panel" }, span("small muted", "Transcript: loading…"));
+  let tx, shownKey;
+  const load = async () => {
+    try { tx = await loadTranscript(b.id); } catch { tx = null; }
+    draw();
+  };
+  const transcribe = async (again) => {
+    try {
+      const r = await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "POST", body: again ? { again: true } : {} });
+      toast(r.queued ? `Queued ${plural(r.queued, "chapter")}` : "Nothing left to transcribe");
+      txWatch();
+    } catch (e) { toast(e.message); }
+  };
+  const stop = async () => {
+    try { await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "DELETE" }); txWatch(); } catch (e) { toast(e.message); }
+  };
+  const draw = () => {
+    if (tx === undefined) return;
+    if (tx === null) return box.replaceChildren(span("small muted", "Transcript: could not load"));
+    const st = txq.st || { available: false, waiting: [] };
+    const waiting = st.waiting.find((w) => w.bookId === b.id)?.chapters || 0;
+    const running = st.running?.bookId === b.id ? st.running : null;
+    // A chapter of this book was finished since the transcript was fetched: fetch again.
+    const key = `${running ? running.chapter : "-"}/${waiting}`;
+    if (shownKey !== undefined && key !== shownKey) { shownKey = key; load(); return; }
+    shownKey = key;
+    const busy = running || waiting > 0;
     const total = chapterCount(b);
     const done = tx.chapters.filter((c) => c.status === "DONE").length;
-    const mine = st.queue.filter((j) => j.bookId === b.id).length;
-    const running = st.running?.bookId === b.id ? st.running : null;
-    const busy = running || mine > 0;
-    const transcribe = async (again) => {
-      try {
-        const r = await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "POST", body: again ? { again: true } : {} });
-        toast(r.queued ? `Queued ${plural(r.queued, "chapter")}` : "Nothing left to transcribe");
-        txWatch();
-        draw();
-      } catch (e) { toast(e.message); }
-    };
-    const stop = async () => {
-      try { await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "DELETE" }); txWatch(); draw(); } catch (e) { toast(e.message); }
-    };
     const actions = el("div", { class: "row" },
       tx.passages.length ? el("button", { class: "btn secondary small", type: "button", onclick: () => openTranscript(b, tx) }, icon("notes"), "Read along") : null,
       st.available && !busy && done < total ? el("button", { class: "btn secondary small", type: "button", onclick: () => transcribe(false) }, icon("magic"), done ? "Transcribe the rest" : "Transcribe on the server") : null,
@@ -2242,14 +2299,15 @@ function transcriptPanel(b) {
         span("strong grow", done === total ? "Transcribed" : done ? `${done} of ${plural(total, "chapter")} transcribed` : "Not transcribed"),
         models ? span("small muted", models) : null),
       running ? el("div", { class: "stack" },
-        span("small", `Transcribing chapter ${running.chapter + 1}${mine ? ` · ${plural(mine, "more chapter")} waiting` : ""}`),
+        span("small", `Transcribing chapter ${running.chapter + 1}${waiting ? ` · ${plural(waiting, "more chapter")} waiting` : ""}`),
         gradientProgress(running.progress)) :
-        mine ? span("small muted", `${plural(mine, "chapter")} waiting their turn`) : null,
-      !st.available && done < total ? span("tiny muted", "This server can't transcribe: whisper.cpp isn't installed.") : null,
+        waiting ? span("small muted", `${plural(waiting, "chapter")} waiting their turn`) : null,
+      txq.st && !st.available && done < total ? span("tiny muted", "This server can't transcribe: whisper.cpp isn't installed.") : null,
       actions.children.length ? actions : null].filter(Boolean));
-    if (busy) setTimeout(() => box.isConnected && draw(), 3000);
   };
-  draw();
+  // Only while its sheet is open: a closed dialog keeps its contents in the page.
+  box.redraw = () => { if (dialog.open && dialog.contains(box)) draw(); };
+  load();
   return box;
 }
 
@@ -2345,7 +2403,9 @@ function searchTranscriptsSheet() {
       results.replaceChildren(...(r.hits.length ? r.hits.map((h) => {
         const b = state.books.find((x) => x.id === h.bookId);
         if (!b) return null;
-        return el("div", { class: "hit", role: "button", tabindex: 0, onclick: () => { openTranscript(b).then(() => playFrom(b, h.startMs)); } },
+        const go_ = () => { openTranscript(b).then(() => playFrom(b, h.startMs)); };
+        return el("div", { class: "hit", role: "button", tabindex: 0, onclick: go_,
+          onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go_(); } } },
           span("t", el("div", { class: "strong clip" }, b.title), el("div", { class: "small" }, h.text)),
           span("end", fmtClock(h.startMs)));
       }).filter(Boolean) : [el("div", {}, span("muted", "Nothing found."))]),
@@ -2412,8 +2472,7 @@ function transcriptionSettings() {
     box.replaceChildren(
       model_, form,
       el("div", { class: "panel row", style: "margin-top:12px" },
-        span("small grow", st.running ? `Transcribing ${title(st.running.bookId)}` + (waiting ? `, ${plural(waiting, "more chapter")} waiting` : "") :
-          waiting ? `${plural(waiting, "chapter")} waiting` : "Nothing being transcribed."),
+        span("small grow tx-summary", txSummary()),
         st.running || waiting || st.lastError ? el("button", { class: "btn ghost small", type: "button", onclick: openQueue }, "Open the queue") : null,
         whole),
       el("p", { class: "tiny muted", style: "margin-top:8px" }, st.vad ? "Speech is found with whisper.cpp's voice-activity detector, so passages begin where speech does." : "This whisper.cpp has no voice-activity detector; passages follow Whisper's own timing."));
@@ -2435,22 +2494,32 @@ function transcriptionSettings() {
 // One poller for everything that shows transcription in progress: the chip in the top
 // bar, the queue sheet, and the markers on books. Every few seconds while something is
 // queued, once a minute otherwise.
-const txq = { st: null, timer: 0, chip: null };
+const txq = { st: null, timer: 0, chip: null, seq: 0 };
 
 function txWatch(delay = 0) {
   clearTimeout(txq.timer);
-  txq.timer = setTimeout(txPoll, delay);
+  const seq = ++txq.seq; // a poll already out drops its answer and does not reschedule
+  txq.timer = setTimeout(() => txPoll(seq), delay);
 }
 
-async function txPoll() {
+async function txPoll(seq) {
   if (!state.token) return;
-  const gen = state.gen;
   let st = null;
   try { st = await api("/api/transcription"); } catch { /* look again later */ }
-  if (gen !== state.gen) return;
+  if (seq !== txq.seq) return;
   txq.st = st;
   txDraw();
-  txq.timer = setTimeout(txPoll, txBusy() ? 4000 : 60000);
+  txq.timer = setTimeout(() => txPoll(seq), txBusy() ? 4000 : 60000);
+}
+
+// txSummary is one line about the queue, for the settings page.
+function txSummary() {
+  const st = txq.st;
+  if (!st) return "";
+  const waiting = txWaitingChapters();
+  const title = st.running && state.books.find((b) => b.id === st.running.bookId)?.title;
+  return st.running ? `Transcribing ${title || "a book"}` + (waiting ? `, ${plural(waiting, "more chapter")} waiting` : "") :
+    waiting ? `${plural(waiting, "chapter")} waiting` : "Nothing being transcribed.";
 }
 
 const txBusy = () => !!(txq.st?.available && (txq.st.running || txq.st.waiting.length));
@@ -2479,6 +2548,9 @@ function txDraw() {
   }
   document.querySelectorAll(".tx-mark").forEach(txMarkDraw);
   document.querySelectorAll(".tx-banner").forEach(txBannerDraw);
+  document.querySelectorAll(".tx-panel").forEach((n) => n.redraw?.());
+  document.querySelectorAll(".tx-summary").forEach((n) => { n.textContent = txSummary(); });
+  document.querySelectorAll(".needs-transcription").forEach((n) => { n.hidden = !st?.available; });
   if (dialog.open && dialog.dataset.sheet === "queue") drawQueue();
 }
 
@@ -2493,6 +2565,9 @@ function txMarkDraw(m) {
   const st = txq.st, id = m.dataset.book;
   const running = st?.running?.bookId === id;
   const waiting = !running && st?.waiting.some((w) => w.bookId === id);
+  const state_ = running ? "running" : waiting ? "waiting" : "";
+  if (m.dataset.state === state_) return;
+  m.dataset.state = state_;
   m.hidden = !running && !waiting;
   m.classList.toggle("now", running);
   m.replaceChildren(...(running || waiting ? [icon("notes"), running ? "Transcribing" : "Waiting to transcribe"] : []));
@@ -2515,7 +2590,7 @@ function txBannerDraw(node) {
     icon("notes"),
     el("div", { class: "grow stack" },
       span("small", r ? `Transcribing ${book?.title || "a book"}, chapter ${r.chapter + 1} · ${Math.floor(r.progress * 100)}%` +
-        (left ? ` · about ${fmtLeft(left)} left` : "") + (waiting ? ` · ${waiting} more waiting` : "") :
+        (left ? ` · ${fmtAbout(left)} left` : "") + (waiting ? ` · ${waiting} more waiting` : "") :
         `${plural(waiting, "chapter")} waiting to be transcribed`),
       r ? gradientProgress(r.progress) : null),
     el("button", { class: "btn ghost small", type: "button", onclick: openQueue }, "Open the queue"));
@@ -2535,7 +2610,8 @@ const chapterMs = (b, i) => {
   return c ? c.endMs - c.startMs : b?.durationMs || 0;
 };
 
-const fmtLeft = (ms) => ms < 60000 ? "under a minute" : fmtDuration(ms);
+// fmtAbout is an estimate in words: "about 2h 5m", or "under a minute".
+const fmtAbout = (ms) => ms < 60000 ? "under a minute" : "about " + fmtDuration(ms);
 
 function openQueue() {
   openSheet("Transcription queue", [el("div", { id: "txq-body", class: "stack" }, el("p", { class: "muted" }, "Loading…"))]);
@@ -2565,7 +2641,7 @@ function drawQueue() {
         el("div", { class: "strong clip" }, b?.title || "A book you can't see"),
         span("small muted", `Chapter ${r.chapter + 1}` + (b?.chapters[r.chapter] ? `: ${b.chapters[r.chapter].title}` : "") + ` · ${fmtDuration(len)} of audio`),
         gradientProgress(r.progress),
-        span("small", `${Math.floor(r.progress * 100)}%` + (left ? ` · about ${fmtLeft(left)} left` : ""))),
+        span("small", `${Math.floor(r.progress * 100)}%` + (left ? ` · ${fmtAbout(left)} left` : ""))),
       isAdmin() || r.mine ? stop(r.bookId) : null));
   }
   if (st.waiting.length) {
@@ -2575,7 +2651,7 @@ function drawQueue() {
     if (speed && total <= st.queue.length) for (const j of st.queue) rest += chapterMs(book(j.bookId), j.chapter);
     parts.push(el("div", { class: "row" },
       el("h3", { class: "section-title grow", style: "margin:6px 0 0" }, `Waiting · ${plural(total, "chapter")}`),
-      rest ? span("small muted", `about ${fmtLeft(leftNow + rest / speed)} for all of it`) : null));
+      rest ? span("small muted", `${fmtAbout(leftNow + rest / speed)} for all of it`) : null));
     parts.push(el("div", { class: "lines" }, st.waiting.map((w) => {
       const b = book(w.bookId);
       return el("div", {},
@@ -2700,13 +2776,7 @@ async function addToList(b) {
     el("h3", { class: "section-title" }, title),
     lists[kind].length ? el("div", { class: "stack" }, lists[kind].map((l) => row(kind, l))) : emptyNote(`No ${kind} yet.`),
   ];
-  const fresh = el("input", { type: "text", placeholder: "New playlist", maxlength: 100, "aria-label": "New playlist name" });
-  const make = el("form", { class: "row", style: "margin-top:10px", onsubmit: async (ev) => {
-    ev.preventDefault();
-    if (!fresh.value.trim()) return;
-    try { await api("/api/playlists", { method: "POST", body: { name: fresh.value, bookIds: [b.id] } }); addToList(b); }
-    catch (e) { toast(e.message); }
-  } }, el("div", { class: "grow" }, fresh), el("button", { class: "btn secondary", type: "submit" }, icon("add"), "Make"));
+  const make = newPlaylistForm([b.id], () => addToList(b));
   openSheet("Add to a list · " + b.title, [
     ...group("playlists", "My playlists"), make,
     isAdmin() ? group("collections", "Collections (everyone sees these)") : null,

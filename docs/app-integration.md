@@ -236,9 +236,10 @@ GET /api/books/{bookId}/transcript
   `{}` (every chapter not yet done) or `{"chapters": [3]}`. `DELETE` on the same path
   stops what this user queued. `{"again": true}` (redo finished chapters) is for admins
   only, and a listener may have up to 2,000 chapters waiting. `GET /api/transcription`
-  shows `running` (`bookId`, `chapter`, `progress`
-  from 0 to 1) and `queue`. Poll it every few seconds while the book's transcript
-  screen is open.
+  shows `running` (`bookId`, `chapter`, `progress` from 0 to 1, `startedAt`, and
+  `mine` when this user queued it) and `waiting`: every book with chapters waiting, in
+  queue order, as `{ bookId, chapters, mine }`. (`queue` lists single chapters too, but
+  only the first 500.) Poll it every few seconds while something is running.
 - **Sending up a phone's transcript:** `PUT /api/books/{bookId}/transcript/chapters/{index}`
   with `{ "status", "model", "engine": "sherpa-onnx", "passages": [ { "startMs", "endMs", "text" } ] }`.
   It replaces that chapter's passages. Text is capped at about 40 characters per second
