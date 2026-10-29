@@ -1403,11 +1403,21 @@ function userSheet(u, libraries) {
       return chip(l.name, chosen.has(key), () => { chosen.has(key) ? chosen.delete(key) : chosen.add(key); drawLibs(); });
     }));
   drawLibs();
-  const libsRow = el("div", { class: "wide", hidden: role === "admin" || libraries.length < 2 ? true : null }, el("div", { class: "small muted", style: "margin-bottom:6px" }, "Can see"), libChips);
+  // What this user can see: chips to choose from, or why there is nothing to choose.
+  const libsBody = el("div");
+  const drawAccess = () => libsBody.replaceChildren(
+    role === "admin" ? el("p", { class: "small muted" }, "Administrators see every library.") :
+      libraries.length < 2 ? el("div", { class: "row" },
+        el("p", { class: "small muted grow" }, libraries.length ? "Everyone sees this server's one library. Add another (a Kids folder, say) to choose which libraries each listener sees." :
+          "There are no libraries yet. Once there are two or more, you can choose which ones each listener sees."),
+        isAdmin() ? el("button", { class: "btn ghost small", type: "button", onclick: () => { dialog.close(); go("libraries"); } }, icon("folder"), "Libraries") : null) :
+      libChips);
+  const libsRow = el("div", { class: "wide" }, el("div", { class: "small muted", style: "margin-bottom:6px" }, "Can see"), libsBody);
   const roleBox = el("div", { class: "segmented" });
   const drawRole = () => roleBox.replaceChildren(...[["user", "Listener"], ["admin", "Administrator"]].map(([id, label]) =>
-    chip(label, role === id, () => { role = id; drawRole(); libsRow.hidden = role === "admin" || libraries.length < 2; })));
+    chip(label, role === id, () => { role = id; drawRole(); drawAccess(); })));
   drawRole();
+  drawAccess();
   const name = el("input", { type: "text", required: !editing, autocomplete: "off", value: u?.name || "", disabled: editing ? true : null, pattern: "[A-Za-z0-9._@\\-]{1,64}" });
   const pass = el("input", { type: "password", required: !editing, minlength: 8, autocomplete: "new-password", placeholder: editing ? "Leave empty to keep" : "" });
   const libsValue = () => libraries.filter((l) => chosen.has(l.name.toLowerCase())).map((l) => l.name);
