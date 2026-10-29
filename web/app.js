@@ -767,6 +767,7 @@ async function viewLibrary(tools) {
       el("div", { class: "search" }, icon("search"), el("input", { type: "search", placeholder: "Search title, author, narrator, series", "aria-label": "Search", value: state.query,
         oninput: (e) => { state.query = e.target.value; limit = PAGE; clearTimeout(searchTimer); searchTimer = setTimeout(fill, 150); } })),
       libSelect, sortSelect, layoutBtns),
+    txBanner(),
     el("div", { class: "toolbar" }, filters, el("span", { class: "grow" }), allLabel, count),
     bulkBar(fill),
     shelf,
@@ -2477,6 +2478,7 @@ function txDraw() {
       (waiting ? ` · ${waiting} waiting` : "");
   }
   document.querySelectorAll(".tx-mark").forEach(txMarkDraw);
+  document.querySelectorAll(".tx-banner").forEach(txBannerDraw);
   if (dialog.open && dialog.dataset.sheet === "queue") drawQueue();
 }
 
@@ -2494,6 +2496,38 @@ function txMarkDraw(m) {
   m.hidden = !running && !waiting;
   m.classList.toggle("now", running);
   m.replaceChildren(...(running || waiting ? [icon("notes"), running ? "Transcribing" : "Waiting to transcribe"] : []));
+}
+
+// txBanner is the library's line about transcription in progress, above the filters.
+function txBanner() {
+  const b = el("div", { class: "tx-banner panel row" });
+  txBannerDraw(b);
+  return b;
+}
+
+function txBannerDraw(node) {
+  node.hidden = !txBusy();
+  if (node.hidden) return;
+  const st = txq.st, r = st.running, waiting = txWaitingChapters();
+  const book = r && state.books.find((x) => x.id === r.bookId);
+  const { left } = txTimes();
+  node.replaceChildren(
+    icon("notes"),
+    el("div", { class: "grow stack" },
+      span("small", r ? `Transcribing ${book?.title || "a book"}, chapter ${r.chapter + 1} · ${Math.floor(r.progress * 100)}%` +
+        (left ? ` · about ${fmtLeft(left)} left` : "") + (waiting ? ` · ${waiting} more waiting` : "") :
+        `${plural(waiting, "chapter")} waiting to be transcribed`),
+      r ? gradientProgress(r.progress) : null),
+    el("button", { class: "btn ghost small", type: "button", onclick: openQueue }, "Open the queue"));
+}
+
+// txTimes is the running chapter's speed so far (audio per wall-clock ms) and time left.
+function txTimes() {
+  const r = txq.st?.running;
+  if (!r) return { speed: 0, left: 0 };
+  const len = chapterMs(state.books.find((b) => b.id === r.bookId), r.chapter), spent = Date.now() - r.startedAt;
+  const speed = r.progress > 0.02 && spent > 5000 ? (len * r.progress) / spent : 0;
+  return { speed, left: speed ? (len * (1 - r.progress)) / speed : 0 };
 }
 
 const chapterMs = (b, i) => {
@@ -2521,13 +2555,10 @@ function drawQueue() {
     try { await api(`/api/books/${encodeURIComponent(id)}/transcribe`, { method: "DELETE" }); txWatch(); } catch (e) { toast(e.message); }
   } }, label);
   const parts = [];
-  // Speed so far, in audio per wall-clock millisecond, for the time left.
-  let speed = 0, leftNow = 0;
+  const { speed, left: leftNow } = txTimes();
   if (st.running) {
     const r = st.running, b = book(r.bookId);
-    const len = chapterMs(b, r.chapter), spent = Date.now() - r.startedAt;
-    if (r.progress > 0.02 && spent > 5000) speed = (len * r.progress) / spent;
-    const left = leftNow = speed ? (len * (1 - r.progress)) / speed : 0;
+    const len = chapterMs(b, r.chapter), left = leftNow;
     parts.push(el("div", { class: "panel row tx-now" },
       b ? cover(b) : null,
       el("div", { class: "grow stack" },

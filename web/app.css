@@ -196,9 +196,9 @@ label.field > span { font-size: 12px; color: var(--on-surface-variant); }
 @media (max-width: 760px) { .widget.wide { grid-column: auto; } }
 .w-head { display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 6px 0 14px; border-bottom: 1px solid var(--line); }
 .w-head h2 { font-size: 14px; font-weight: 500; flex: 1; min-width: 0; letter-spacing: .2px; }
-.w-body { display: grid; grid-template-columns: 120px 1fr; gap: 14px; padding: 14px; flex: 1; }
+.w-body { display: grid; grid-template-columns: 148px 1fr; gap: 16px; padding: 14px; flex: 1; align-items: start; }
 .w-body.full { grid-template-columns: 1fr; }
-.w-visual { display: grid; place-items: center; align-content: center; gap: 8px; text-align: center; border-radius: 4px; background: var(--card-head); padding: 14px 8px; min-height: 130px; }
+.w-visual { display: grid; place-items: center; align-content: center; gap: 8px; text-align: center; border-radius: 4px; background: var(--card-head); padding: 14px; min-height: 148px; }
 .w-visual img.logo { width: 64px; height: 64px; }
 .w-visual .big { font-size: 22px; line-height: 26px; font-weight: 500; }
 .w-visual .ico svg { width: 44px; height: 44px; color: var(--on-surface-variant); }
@@ -437,3 +437,6 @@ tr.picked td { background: color-mix(in srgb, var(--secondary-container) 45%, tr
 .tx-mark.now { color: var(--primary); }
 .tx-now .cover-box { width: 64px; }
 @media (max-width: 640px) { .tx-chip-text { display: none; } .tx-chip { padding: 0 7px; } }
+.tx-banner { margin-bottom: 10px; }
+.tx-banner[hidden] { display: none; }
+.tx-banner > svg.i { color: var(--primary); flex: none; }
