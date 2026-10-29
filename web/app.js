@@ -1357,15 +1357,28 @@ async function showPicker(box, path) {
       render();
     } catch (e) { toast(e.message); add.disabled = false; }
   } }, icon("add"), "Add this folder");
+  // A new folder in the one shown, to make a library of (a Kids folder beside the others).
+  const fresh = el("input", { type: "text", placeholder: "New folder name", maxlength: 100, "aria-label": "New folder name" });
+  const makeRow = el("form", { class: "row", hidden: true, onsubmit: async (ev) => {
+    ev.preventDefault();
+    if (!fresh.value.trim()) return;
+    try {
+      const made = await api("/api/fs/folder", { method: "POST", body: { parent: here.path, name: fresh.value.trim() } });
+      showPicker(box, made.path);
+    } catch (e) { toast(e.message); }
+  } }, el("div", { class: "grow" }, fresh), el("button", { class: "btn secondary small", type: "submit" }, "Make it"));
+  const newFolder = el("button", { class: "btn ghost small", type: "button", onclick: () => { makeRow.hidden = false; newFolder.hidden = true; fresh.focus(); } }, icon("add"), "New folder");
   box.replaceChildren(el("div", { class: "stack" },
     el("div", { class: "picker" },
       el("div", { class: "here" },
         el("button", { class: "icon-btn", type: "button", title: "Up one folder", "aria-label": "Up one folder", disabled: here.parent ? null : true, onclick: () => showPicker(box, here.parent) }, icon("up")),
-        el("div", { class: "grow" }, typed)),
+        el("div", { class: "grow" }, typed), newFolder),
       el("div", { class: "list" },
         here.dirs.length ? here.dirs.map((d) => el("button", { class: "dir", type: "button", onclick: () => showPicker(box, d.path) },
           icon("folder"), span("grow clip", d.name))) :
           el("p", { class: "muted", style: "padding:12px" }, "No folders in here."))),
+    makeRow,
+    here.docker ? el("p", { class: "small muted" }, "This server runs in Docker, so it sees only the folders mounted into it. A new library needs a folder that isn't inside another library: mount a folder that holds your library folders (say /books, with Audiobooks and Kids inside), then make or pick one here.") : null,
     el("p", { class: "small muted" }, here.audio ? `${plural(here.audio, "audio file")} directly in this folder. If this is one book, pick the folder above it.` : "Pick the folder that holds your audiobooks."),
     el("label", { class: "field" }, el("span", {}, "Name"), name),
     el("div", { class: "row end" }, el("button", { class: "btn secondary", type: "button", onclick: () => dialog.close() }, "Cancel"), add)));

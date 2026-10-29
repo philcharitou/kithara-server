@@ -639,3 +639,35 @@ func TestBrowseFolders(t *testing.T) {
 		t.Fatalf("browse with no path gave %d", res.StatusCode)
 	}
 }
+
+func TestMakeFolder(t *testing.T) {
+	ts, _, _, data := twoLibraryServer(t)
+	admin := loginAs(t, ts, "phil", "correct horse", "laptop")
+	kid := loginAs(t, ts, "kid", "battery staple", "tablet")
+	parent := t.TempDir()
+	mk := func(token, parent, name string) int {
+		res, _ := call(t, ts, "POST", "/api/fs/folder", token, map[string]string{"parent": parent, "name": name})
+		return res.StatusCode
+	}
+	if code := mk(admin, parent, "Kids"); code != 201 {
+		t.Fatalf("make: %d", code)
+	}
+	if info, err := os.Stat(filepath.Join(parent, "Kids")); err != nil || !info.IsDir() {
+		t.Fatal("no folder made")
+	}
+	for _, c := range []struct {
+		token, parent, name string
+		want                int
+	}{
+		{admin, parent, "Kids", 409},
+		{admin, parent, "../escape", 400},
+		{admin, parent, ".hidden", 400},
+		{admin, data, "inside", 400},
+		{admin, "relative", "x", 400},
+		{kid, parent, "Mine", 403},
+	} {
+		if code := mk(c.token, c.parent, c.name); code != c.want {
+			t.Errorf("%q in %q: %d, want %d", c.name, c.parent, code, c.want)
+		}
+	}
+}

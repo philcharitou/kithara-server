@@ -270,6 +270,16 @@ docker exec -it kithara kithara-server user add phil
 (`:ro` on the library means ids are kept in the data volume instead of sidecar files;
 drop it if you want the sidecars.)
 
+To keep several libraries, or to add them later from the web page, mount a folder that
+holds them, and name the first:
+
+```bash
+docker run -d --name kithara   -v /srv/books:/books -v kithara-data:/data -p 8080:8080   -e KITHARA_LIBRARY=Audiobooks=/books/Audiobooks   ghcr.io/philcharitou/kithara-server
+```
+
+Then **Libraries → Add** can make or pick `/books/Kids` beside it. The container only
+sees what is mounted into it, and a library can't be inside another one.
+
 **HTTPS.** Plain `http://` is fine on your own Wi-Fi. Anywhere else, put it behind a
 reverse proxy that terminates TLS (Caddy does this with two lines; nginx with certbot
 works too) and bind the server to `127.0.0.1`. The token in every request is a bearer

@@ -65,6 +65,7 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("POST /api/libraries", s.withAdmin(s.addLibraryHandler))
 	m.HandleFunc("DELETE /api/libraries/{name}", s.withAdmin(s.removeLibraryHandler))
 	m.HandleFunc("GET /api/fs", s.withAdmin(s.browse))
+	m.HandleFunc("POST /api/fs/folder", s.withAdmin(s.makeFolder))
 	m.HandleFunc("POST /api/rescan", s.withAdmin(s.rescan))
 	m.HandleFunc("GET /api/progress", s.withUser(s.allProgress))
 	m.HandleFunc("PUT /api/progress/{bookId}", s.withUser(s.putProgress))

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -281,7 +282,49 @@ func (s *server) browse(w http.ResponseWriter, r *http.Request, user, token stri
 	if parent == path {
 		parent = ""
 	}
-	writeJSONResponse(w, 200, map[string]any{"path": path, "parent": parent, "dirs": dirs, "audio": audio, "separator": string(filepath.Separator)})
+	writeJSONResponse(w, 200, map[string]any{"path": path, "parent": parent, "dirs": dirs, "audio": audio, "separator": string(filepath.Separator),
+		"docker": inDocker()})
+}
+
+// inDocker reports whether the server runs in a container, where it only sees the
+// folders mounted into it (the picker says so).
+func inDocker() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
+}
+
+// makeFolder (admin) makes a new folder for a library: {"parent", "name"}.
+func (s *server) makeFolder(w http.ResponseWriter, r *http.Request, user, token string) {
+	var in struct{ Parent, Name string }
+	if err := readBody(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "send {parent, name}")
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" || len(name) > 100 || strings.HasPrefix(name, ".") || strings.ContainsAny(name, `/\:*?"<>|`) {
+		writeError(w, http.StatusBadRequest, `a folder name is 1 to 100 characters, not starting with a dot, and without / \ : * ? " < > |`)
+		return
+	}
+	if !filepath.IsAbs(in.Parent) {
+		writeError(w, http.StatusBadRequest, "give the full path of the folder to make it in")
+		return
+	}
+	path := filepath.Join(filepath.Clean(in.Parent), name)
+	data, _ := filepath.Abs(s.lib.dataDir)
+	if within(path, data) {
+		writeError(w, http.StatusBadRequest, "not inside the server's own data folder")
+		return
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, os.ErrExist) {
+			code = http.StatusConflict
+		}
+		writeError(w, code, "could not make "+path+": "+err.Error())
+		return
+	}
+	log.Printf("%s made the folder %s", user, path)
+	writeJSONResponse(w, http.StatusCreated, map[string]string{"path": path})
 }
 
 // browseStart is where the folder picker starts: the folder the first library is in,
