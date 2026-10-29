@@ -8,7 +8,7 @@ that does none of it keeps working exactly as before.
 Detect features rather than assume them. `/api/health` now lists them:
 
 ```json
-{ "ok": true, "protocol": 1, "name": "Phil's shelf", "version": "0.7.1",
+{ "ok": true, "protocol": 1, "name": "Phil's shelf", "version": "0.7.2",
   "features": ["collections", "playlists", "reportedSessions", "oidc", "transcripts", "transcription"] }
 ```
 
