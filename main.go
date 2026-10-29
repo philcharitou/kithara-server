@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const serverVersion = "0.7.0"
+const serverVersion = "0.7.1"
 
 func main() {
 	if len(os.Args) < 2 {
