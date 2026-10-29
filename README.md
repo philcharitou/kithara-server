@@ -111,6 +111,10 @@ keeps the books from its last good scan instead of vanishing from every device.
   chapter each, named from their `title` tag or file name.
 - **Cover**: `cover.jpg`/`cover.png`/`folder.jpg` in the folder, else the artwork embedded in
   the first file.
+- Titles are tidied: Audible's "Title: Series, Book 3" and "Series 3: Title" give the
+  series and number (the latter only when the series' name is in the title), look-alike
+  colons from file names become ":", and "(Unabridged)" goes. A "Read by …" comment
+  gives the narrator, and placeholder comments ("Chapter 80") are not descriptions.
 - Metadata and covers an admin has matched or edited (see below) override all of the
   above.
 - Each book folder gets a tiny `.kithara-id` file so its id survives renames and moves

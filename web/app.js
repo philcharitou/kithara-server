@@ -428,6 +428,7 @@ async function signOut() {
 }
 
 function go(view) {
+  if (view !== state.view) pickEnd();
   state.view = view;
   try { history.replaceState(null, "", "#" + view); } catch { /* fine */ }
   render();
@@ -470,7 +471,9 @@ function rescanButton() {
 async function refreshMain(view) {
   const main = document.getElementById("main");
   const tools = document.getElementById("tools");
-  if (main) main.replaceChildren(...[await view(tools)].flat().filter(Boolean));
+  if (!main) return;
+  tools.replaceChildren(); // the view adds its own buttons again
+  main.replaceChildren(...[await view(tools)].flat().filter(Boolean));
 }
 
 // A dashboard widget: a header with actions, then a visual and an overview list, or a
@@ -692,6 +695,10 @@ async function viewLibrary(tools) {
   await loadLibrary();
   const prefs = state.prefs;
   tools.append(el("button", { class: "btn secondary small", type: "button", onclick: searchTranscriptsSheet }, icon("search"), "Search what's said"));
+  if (state.books.length) {
+    tools.append(el("button", { class: "btn secondary small", type: "button", "aria-pressed": pick.on ? "true" : "false",
+      onclick: () => { if (pick.on) pickEnd(); else pick.on = true; refreshMain(viewLibrary); } }, icon("check"), pick.on ? "Done selecting" : "Select"));
+  }
   if (isAdmin()) {
     tools.append(rescanButton());
   }
@@ -712,6 +719,7 @@ async function viewLibrary(tools) {
       .filter((b) => prefs.filter === "all" || statusOf(b) === prefs.filter)
       .filter((b) => matches(b, words))
       .sort((SORTS[prefs.sort] || SORTS.title)[1]);
+    pick.shown = shown;
     count.textContent = shown.length === state.books.length ? plural(shown.length, "book") : `${shown.length} of ${state.books.length} books`;
     if (!shown.length) {
       shelf.replaceChildren(el("div", { class: "table-wrap" }, emptyNote("Nothing matches.")));
@@ -753,20 +761,25 @@ async function viewLibrary(tools) {
         oninput: (e) => { state.query = e.target.value; limit = PAGE; clearTimeout(searchTimer); searchTimer = setTimeout(fill, 150); } })),
       libSelect, sortSelect, layoutBtns),
     el("div", { class: "toolbar" }, filters, el("span", { class: "grow" }), count),
+    pick.on ? bulkBar(fill) : null,
     shelf,
-  ];
+  ].filter(Boolean);
 }
 
 function bookTable(books) {
   const multi = state.libraries.length > 1;
   return el("div", { class: "table-wrap" }, el("table", { class: "grid" },
     el("thead", {}, el("tr", {},
-      el("th", { class: "c-cover" }), el("th", {}, "Title"), el("th", { class: "hide-sm" }, "Author"), el("th", { class: "hide-sm" }, "Narrator"),
+      pick.on ? el("th", { class: "c-pick" }) : null, el("th", { class: "c-cover" }), el("th", {}, "Title"), el("th", { class: "hide-sm" }, "Author"), el("th", { class: "hide-sm" }, "Narrator"),
       el("th", { class: "hide-sm" }, "Series"), multi ? el("th", { class: "hide-sm" }, "Library") : null,
       el("th", { class: "c-num" }, "Length"), el("th", { class: "c-prog" }, "Progress"))),
     el("tbody", {}, books.map((b) => {
       const p = progressOf(b);
-      return el("tr", { tabindex: 0, onclick: () => openBook(b.id), onkeydown: (e) => { if (e.key === "Enter") openBook(b.id); } },
+      const open = (row) => pick.on ? pickToggle(b.id, row) : openBook(b.id);
+      const row = el("tr", { tabindex: 0, class: pick.on && pick.ids.has(b.id) ? "picked" : null,
+        onclick: () => open(row), onkeydown: (e) => { if (e.key === "Enter" || pick.on && e.key === " ") { e.preventDefault(); open(row); } } },
+        pick.on ? el("td", { class: "c-pick" }, el("input", { type: "checkbox", tabindex: -1, "aria-label": "Select " + b.title, checked: pick.ids.has(b.id) ? true : null,
+          onclick: (e) => { e.stopPropagation(); pickToggle(b.id, row); } })) : null,
         el("td", { class: "c-cover" }, cover(b)),
         el("td", {}, el("div", { class: "strong clip2" }, b.title), b.subtitle ? el("div", { class: "small muted clip" }, b.subtitle) : null),
         el("td", { class: "hide-sm" }, b.author || span("muted", "—")),
@@ -775,17 +788,115 @@ function bookTable(books) {
         multi ? el("td", { class: "hide-sm muted" }, b.library) : null,
         el("td", { class: "c-num" }, fmtDuration(b.durationMs)),
         el("td", { class: "c-prog" }, p && !p.finished && p.positionMs > 0 ? gradientProgress(p.fraction) : null, statusText(b)));
+      return row;
     }))));
 }
 
 function bookTile(b) {
   const p = progressOf(b);
-  return el("button", { class: "tile", type: "button", onclick: () => openBook(b.id) },
+  const tile = el("button", { class: "tile" + (pick.on && pick.ids.has(b.id) ? " picked" : ""), type: "button",
+    "aria-pressed": pick.on ? String(pick.ids.has(b.id)) : null,
+    onclick: () => pick.on ? pickToggle(b.id, tile) : openBook(b.id) },
+    pick.on ? el("span", { class: "pick-mark", "aria-hidden": "true" }, icon("check")) : null,
     cover(b),
     p && !p.finished && p.positionMs > 0 ? gradientProgress(p.fraction) : null,
     el("div", { class: "strong clip2" }, b.title),
     el("div", { class: "small muted clip" }, b.author || "Unknown author"),
     statusText(b));
+  return tile;
+}
+
+// ------------------------------------------------------------------ picking books
+
+// Select mode on the library: a click picks a book instead of opening it, and a bar
+// offers what can be done to all of them at once.
+const pick = { on: false, ids: new Set(), shown: [], changed: () => {} };
+
+function pickEnd() {
+  pick.on = false;
+  pick.ids.clear();
+}
+
+function pickToggle(id, node) {
+  if (pick.ids.has(id)) pick.ids.delete(id); else pick.ids.add(id);
+  const on = pick.ids.has(id);
+  node?.classList.toggle("picked", on);
+  const box = node?.querySelector("input[type=checkbox]");
+  if (box) box.checked = on;
+  if (node?.hasAttribute("aria-pressed")) node.setAttribute("aria-pressed", String(on));
+  pick.changed();
+}
+
+const pickedBooks = () => state.books.filter((b) => pick.ids.has(b.id));
+
+function bulkBar(refill) {
+  const count = span("strong", "");
+  const actions = el("div", { class: "row" });
+  const run = (label, fn) => el("button", { class: "btn secondary small", type: "button", onclick: async (ev) => {
+    const btn = ev.currentTarget;
+    const books = pickedBooks();
+    if (!books.length) return toast("Select some books first");
+    btn.disabled = true;
+    try { await fn(books); } catch (e) { toast(e.message); }
+    btn.disabled = false;
+  } }, label);
+  const progressAll = (finished) => async (books) => {
+    for (const b of books) {
+      const p = await api(`/api/progress/${encodeURIComponent(b.id)}`, { method: "PUT", body: { positionMs: finished ? b.durationMs : 0, updatedAt: Date.now(), finished } });
+      state.progress.set(b.id, p);
+    }
+    toast(finished ? `Marked ${plural(books.length, "book")} finished` : `${plural(books.length, "book")} back to the start`);
+    refill();
+  };
+  actions.append(
+    run([icon("queue"), "Add to a list"], (books) => addManyToList(books)),
+    run([icon("check"), "Mark finished"], progressAll(true)),
+    run([icon("replay"), "Mark not started"], progressAll(false)));
+  api("/api/transcription").then((st) => {
+    if (!st.available) return;
+    actions.append(run([icon("notes"), "Transcribe"], async (books) => {
+      let n = 0;
+      for (const b of books) n += (await api(`/api/books/${encodeURIComponent(b.id)}/transcribe`, { method: "POST", body: {} })).queued;
+      toast(n ? `Queued ${plural(n, "chapter")}` : "Nothing left to transcribe");
+    }));
+  }).catch(() => {});
+  if (isAdmin()) actions.prepend(run([icon("magic"), "Find details"], (books) => openSheet(`Find details · ${plural(books.length, "book")}`, bulkMatch(books), { wide: true })));
+  const draw = () => { count.textContent = `${pick.ids.size} selected`; };
+  pick.changed = draw;
+  draw();
+  return el("div", { class: "toolbar bulk-bar" },
+    count,
+    el("button", { class: "btn ghost small", type: "button", onclick: () => { pick.shown.forEach((b) => pick.ids.add(b.id)); refill(); draw(); } }, "Select all shown"),
+    el("button", { class: "btn ghost small", type: "button", onclick: () => { pick.ids.clear(); refill(); draw(); } }, "Clear"),
+    el("span", { class: "grow" }),
+    actions);
+}
+
+// addManyToList adds books to one of the user's playlists (or, for an admin, a
+// collection), or to a new playlist.
+async function addManyToList(books) {
+  const lists = await loadLists();
+  const add = async (kind, l) => {
+    const bookIds = [...l.bookIds, ...books.map((b) => b.id).filter((id) => !l.bookIds.includes(id))];
+    await api(`/api/${kind}/${encodeURIComponent(l.id)}`, { method: "PATCH", body: { bookIds } });
+    toast(`Added to ${l.name}`);
+    dialog.close();
+  };
+  const rows = (kind) => lists[kind].length ? el("div", { class: "lines" }, lists[kind].map((l) => el("div", {},
+    span("t clip", l.name), span("small muted", plural(l.bookIds.length, "book")),
+    el("button", { class: "btn secondary small", type: "button", onclick: () => add(kind, l).catch((e) => toast(e.message)) }, "Add")))) : emptyNote(`No ${kind} yet.`);
+  const fresh = el("input", { type: "text", placeholder: "New playlist", maxlength: 100, "aria-label": "New playlist name" });
+  const make = el("form", { class: "row", onsubmit: async (ev) => {
+    ev.preventDefault();
+    if (!fresh.value.trim()) return;
+    try { await api("/api/playlists", { method: "POST", body: { name: fresh.value, bookIds: books.map((b) => b.id) } }); toast("Playlist made"); dialog.close(); }
+    catch (e) { toast(e.message); }
+  } }, el("div", { class: "grow" }, fresh), el("button", { class: "btn secondary", type: "submit" }, icon("add"), "Make"));
+  openSheet(`Add ${plural(books.length, "book")} to a list`, [
+    el("h3", { class: "section-title" }, "My playlists"), rows("playlists"), make,
+    isAdmin() ? el("h3", { class: "section-title" }, "Collections (everyone sees these)") : null,
+    isAdmin() ? rows("collections") : null,
+  ]);
 }
 
 // ------------------------------------------------------------------ sheets
@@ -1836,10 +1947,28 @@ async function viewMaintenance(tools) {
   const gaps = (b) => [!b.coverUrl && "cover", !b.author && "author", !b.description && "description", !b.narrator && "narrator"].filter(Boolean);
   const lacking = state.books.filter((b) => gaps(b).length).sort(byTitle);
 
+  return [
+    el("section", { class: "widget", style: "margin-bottom:12px" },
+      el("div", { class: "w-head" }, el("h2", {}, `Scan problems (${problems.length})`)),
+      problems.length ? el("table", { class: "grid" },
+        el("thead", {}, el("tr", {}, el("th", {}, "Library"), el("th", {}, "Path"), el("th", {}, "Problem"))),
+        el("tbody", {}, problems.map((p) => el("tr", {},
+          el("td", {}, p.library), el("td", { class: "mono small" }, p.path), el("td", { class: "err small" }, p.error))))) :
+        el("p", { class: "muted", style: "padding:14px" }, "The last scan used everything it found.")),
+    el("section", { class: "widget" },
+      el("div", { class: "w-head" }, el("h2", {}, `Books missing details (${lacking.length})`)),
+      lacking.length ? bulkMatch(lacking, gaps) : el("p", { class: "muted", style: "padding:14px" }, "Every book has a cover, an author, a narrator and a description.")),
+  ];
+}
+
+// bulkMatch looks books up with a provider in one go, and saves the matches ticked:
+// for Maintenance's books missing details, and for books picked in the library.
+// gaps, when given, says what each book lacks.
+function bulkMatch(books, gaps) {
   const provider = el("select", { "aria-label": "Provider", style: "width:auto" },
     PROVIDERS.map(([v, l]) => el("option", { value: v }, "Source: " + l)));
   const rows = new Map();
-  const tbody = el("tbody", {}, lacking.map((b) => {
+  const tbody = el("tbody", {}, books.map((b) => {
     const pick = el("input", { type: "checkbox", checked: true, "aria-label": "Include " + b.title });
     const found = el("td", { class: "muted small" }, "—");
     const use = el("input", { type: "checkbox", disabled: true, "aria-label": "Use this match" });
@@ -1848,7 +1977,7 @@ async function viewMaintenance(tools) {
       el("td", { style: "width:32px" }, pick),
       el("td", { class: "c-cover" }, cover(b)),
       el("td", {}, el("div", { class: "strong clip2" }, b.title), el("div", { class: "small muted" }, b.author || "Unknown author")),
-      el("td", { class: "hide-sm" }, gaps(b).map((g) => el("span", { class: "tag", style: "margin:0 4px 4px 0" }, "no " + g))),
+      gaps ? el("td", { class: "hide-sm" }, gaps(b).map((g) => el("span", { class: "tag", style: "margin:0 4px 4px 0" }, "no " + g))) : el("td", { class: "hide-sm small muted" }, b.author || ""),
       found, el("td", { style: "width:40px" }, use));
   }));
   const status = span("small muted grow", "");
@@ -1889,25 +2018,15 @@ async function viewMaintenance(tools) {
     }
     await rescanNow().catch(() => {});
     toast(`Saved ${chosen.length - failed} of ${chosen.length}`);
+    if (dialog.open) dialog.close();
     render();
   } }, icon("check"), "Apply ticked");
 
   return [
-    el("section", { class: "widget", style: "margin-bottom:12px" },
-      el("div", { class: "w-head" }, el("h2", {}, `Scan problems (${problems.length})`)),
-      problems.length ? el("table", { class: "grid" },
-        el("thead", {}, el("tr", {}, el("th", {}, "Library"), el("th", {}, "Path"), el("th", {}, "Problem"))),
-        el("tbody", {}, problems.map((p) => el("tr", {},
-          el("td", {}, p.library), el("td", { class: "mono small" }, p.path), el("td", { class: "err small" }, p.error))))) :
-        el("p", { class: "muted", style: "padding:14px" }, "The last scan used everything it found.")),
-    el("section", { class: "widget" },
-      el("div", { class: "w-head" }, el("h2", {}, `Books missing details (${lacking.length})`)),
-      lacking.length ? [
-        el("div", { class: "toolbar", style: "padding:12px 14px 0" }, provider, find, apply, status),
-        el("table", { class: "grid" },
-          el("thead", {}, el("tr", {}, el("th", {}), el("th", { class: "c-cover" }), el("th", {}, "Book"), el("th", { class: "hide-sm" }, "Missing"), el("th", {}, "Best match"), el("th", {}, "Use"))),
-          tbody),
-      ] : el("p", { class: "muted", style: "padding:14px" }, "Every book has a cover, an author, a narrator and a description.")),
+    el("div", { class: "toolbar", style: "padding:12px 14px 0" }, provider, find, apply, status),
+    el("table", { class: "grid" },
+      el("thead", {}, el("tr", {}, el("th", {}), el("th", { class: "c-cover" }), el("th", {}, "Book"), el("th", { class: "hide-sm" }, gaps ? "Missing" : "Author"), el("th", {}, "Best match"), el("th", {}, "Use"))),
+      tbody),
   ];
 }
 

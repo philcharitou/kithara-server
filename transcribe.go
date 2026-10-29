@@ -142,7 +142,7 @@ func (t *transcriber) settings() TranscribeSettings {
 		c.Model = defaultWhisperModel
 	}
 	if c.Threads <= 0 {
-		c.Threads = min(max(runtime.NumCPU()-1, 1), 8)
+		c.Threads = min(max(runtime.NumCPU()-1, 1), 16)
 	}
 	m, _ := modelByID(c.Model)
 	if c.Language == "" || m.English {
@@ -435,7 +435,37 @@ func (t *transcriber) transcribeRange(ctx context.Context, b *Book, startMs, end
 		out = append(out, got...)
 		progress(float64(i+1) / float64(pieces))
 	}
-	return out, nil
+	return joinSentences(out), nil
+}
+
+// Whisper cuts where it likes, often mid-sentence ("as far as I" / "could tell."), which
+// reads badly along with the audio. joinSentences joins a passage to the next while it
+// has not reached the end of a sentence, the two follow on closely, and the result
+// stays a readable length.
+const (
+	joinGapMs   = 1500
+	joinMaxText = 400
+)
+
+func joinSentences(ps []Passage) []Passage {
+	out := make([]Passage, 0, len(ps))
+	for _, p := range ps {
+		if n := len(out); n > 0 {
+			last := &out[n-1]
+			if !endsSentence(last.Text) && p.StartMs-last.EndMs <= joinGapMs && len(last.Text)+len(p.Text) < joinMaxText {
+				last.Text += " " + p.Text
+				last.EndMs = p.EndMs
+				continue
+			}
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func endsSentence(s string) bool {
+	s = strings.TrimRight(s, `"')]»”’ `)
+	return s == "" || strings.ContainsAny(s[len(s)-1:], ".!?…") || strings.HasSuffix(s, "…")
 }
 
 // decodeRange writes [from, to) of the book as 16 kHz mono WAV, cutting it out of

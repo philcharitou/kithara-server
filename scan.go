@@ -864,6 +864,8 @@ func (l *library) buildBook(r *libRoot, dir string, files []string, fallbackTitl
 		}
 	}
 
+	tidy(&b)
+
 	// What an admin set or matched, kept in the data folder, has the very last word.
 	if om, modified := overrideMeta(l.dataDir, id); modified > 0 {
 		b.apply(om)
@@ -1031,6 +1033,7 @@ func (l *library) extractCover(id, file string) string {
 // ------------------------------------------------------------------ ffprobe
 
 type probeResult struct {
+	V          int               `json:"v,omitempty"` // probeVersion when probed
 	Size       int64             `json:"size"`
 	ModTime    int64             `json:"mtime"`
 	DurationMs int64             `json:"durationMs"`
@@ -1070,7 +1073,7 @@ func (c *probeCache) probe(path string, info os.FileInfo) (probeResult, error) {
 	if c.seen != nil {
 		c.seen[path] = true
 	}
-	if r, ok := c.entries[path]; ok && r.Size == info.Size() && r.ModTime == info.ModTime().UnixMilli() {
+	if r, ok := c.entries[path]; ok && r.V == probeVersion && r.Size == info.Size() && r.ModTime == info.ModTime().UnixMilli() {
 		c.mu.Unlock()
 		return r, nil
 	}
@@ -1117,10 +1120,13 @@ var (
 // comments, encoder notes) are not kept in the cache.
 var usedTags = map[string]bool{}
 
+// probeVersion goes up when usedTags gains a tag, so files probed before are read again.
+const probeVersion = 2
+
 func init() {
 	for _, k := range strings.Fields(`album title subtitle artist album_artist author composer narrator performer
 		series mvnm grouping series-part series_index mvin part description comment synopsis publisher label
-		date year originaldate release_date language lang isbn asin audible_asin genre`) {
+		date year originaldate release_date language lang isbn asin audible_asin genre lyrics`) {
 		usedTags[k] = true
 	}
 }
@@ -1150,7 +1156,7 @@ func ffprobe(path string) (probeResult, error) {
 		return probeResult{}, err
 	}
 	secs, _ := strconv.ParseFloat(raw.Format.Duration, 64)
-	r := probeResult{DurationMs: int64(secs*1000 + 0.5), Tags: map[string]string{}}
+	r := probeResult{V: probeVersion, DurationMs: int64(secs*1000 + 0.5), Tags: map[string]string{}}
 	for k, v := range raw.Format.Tags {
 		if k = strings.ToLower(k); usedTags[k] {
 			r.Tags[k] = v

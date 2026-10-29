@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -79,16 +80,76 @@ func tagMeta(tags map[string]string, single bool) bookMeta {
 	if s := get("series-part", "series_index", "mvin", "part"); s != "" {
 		m.SeriesIndex = parseIndex(strings.Split(s, "/")[0])
 	}
-	m.Description = get("description", "comment", "synopsis")
+	// The description is the first of these that is one: rippers put other things in
+	// comment ("Read by …", or "Chapter 80"), and some keep the blurb in lyrics.
+	for _, k := range []string{"description", "comment", "synopsis", "lyrics"} {
+		v := strings.TrimSpace(tags[k])
+		if credit := creditRe.FindStringSubmatch(v); credit != nil {
+			if m.Narrator == "" {
+				m.Narrator = strings.ReplaceAll(strings.TrimSpace(credit[1]), " & ", ", ")
+			}
+			continue
+		}
+		if len(v) >= 3 && !placeholderRe.MatchString(v) && v != m.Title {
+			m.Description = v
+			break
+		}
+	}
 	m.Publisher = get("publisher", "label")
 	m.PublishedYear = yearOf(get("date", "year", "originaldate", "release_date"))
 	m.Language = get("language", "lang")
 	m.ISBN = get("isbn")
 	m.ASIN = get("asin", "audible_asin")
 	if g := get("genre"); g != "" {
-		m.Genres = splitList(g)
+		// "Audiobook" says nothing about the book: they all are.
+		m.Genres = slices.DeleteFunc(splitList(g), func(s string) bool { return noGenreRe.MatchString(s) })
 	}
 	return m
+}
+
+var (
+	creditRe      = regexp.MustCompile(`(?i)^(?:read|narrated|performed)\s+by\s+(.{2,200}?)\.?$`)
+	placeholderRe = regexp.MustCompile(`(?i)^(?:chapter|track|part|disc|cd)\s*\d+$`)
+	noGenreRe     = regexp.MustCompile(`(?i)^(?:audio ?books?|unabridged)$`)
+)
+
+// ------------------------------------------------------------------ tidying up
+
+var (
+	// Look-alikes of ':' that apps and rippers put in file names, where ':' is not allowed.
+	colonish = strings.NewReplacer("꞉", ":", "：", ":", "∶", ":")
+	// "Carl's Doomsday Scenario: Dungeon Crawler Carl, Book 2", as Audible titles them.
+	titleSeriesRe = regexp.MustCompile(`^(.+?):\s+(.+?),?\s+(?:Book|Volume|Vol\.?)\s+(\d+(?:\.\d+)?)$`)
+	// "Dune 2: Dune Messiah".
+	seriesTitleRe = regexp.MustCompile(`^(.+?)\s+(\d+(?:\.\d+)?)\s*:\s+(.+)$`)
+	unabridgedRe  = regexp.MustCompile(`(?i)\s*[(\[]unabridged[)\]]\s*$`)
+)
+
+// tidy cleans up what the files said, once every source but an admin's edits is in:
+// look-alike colons, "(Unabridged)", and a series and number written into the title.
+// A series is only taken from the title when the book has none or the same one.
+func tidy(b *Book) {
+	b.Title = unabridgedRe.ReplaceAllString(colonish.Replace(strings.TrimSpace(b.Title)), "")
+	b.Subtitle = colonish.Replace(b.Subtitle)
+	b.Series = colonish.Replace(b.Series)
+	for i := range b.Chapters {
+		b.Chapters[i].Title = colonish.Replace(strings.TrimSpace(b.Chapters[i].Title))
+	}
+	sameSeries := func(s string) bool { return b.Series == "" || strings.EqualFold(b.Series, s) }
+	take := func(title, series, index string) {
+		b.Title, b.Series = strings.TrimSpace(title), strings.TrimSpace(series)
+		if b.SeriesIndex == nil {
+			b.SeriesIndex = parseIndex(index)
+		}
+	}
+	if m := titleSeriesRe.FindStringSubmatch(b.Title); m != nil && sameSeries(m[2]) {
+		take(m[1], m[2], m[3])
+	} else if m := seriesTitleRe.FindStringSubmatch(b.Title); m != nil && sameSeries(m[1]) &&
+		// Only when the series' name is in the title too ("Dune 2: Dune Messiah"), so
+		// "Catch 22: A Novel" stays a title.
+		strings.Contains(strings.ToLower(m[3]), strings.ToLower(m[1])) {
+		take(m[3], m[1], m[2])
+	}
 }
 
 // ------------------------------------------------------------------ folder names
