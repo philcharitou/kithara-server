@@ -497,6 +497,18 @@ function widget(title, { actions = [], visual, overview, body, wide } = {}) {
       el("div", { class: "w-body full" }, body));
 }
 
+// people shows a list of names ("A, B, C", or an array) cut to the first max, with
+// "… +2" that opens the rest in place: Dune has four narrators, some books a dozen.
+function people(names, max = 2) {
+  const list = (Array.isArray(names) ? names : String(names || "").split(",")).map((x) => x.trim()).filter(Boolean);
+  if (list.length <= max) return list.join(", ");
+  const rest = list.slice(max);
+  const box = span("people", list.slice(0, max).join(", ") + " ");
+  box.append(el("button", { class: "more-link", type: "button", title: rest.join(", "), "aria-label": `Show ${plural(rest.length, "more name")}: ${rest.join(", ")}`,
+    onclick: (e) => { e.stopPropagation(); box.replaceChildren(list.join(", ")); } }, `… +${rest.length}`));
+  return box;
+}
+
 function kv(pairs) {
   const dl = el("dl", { class: "kv" });
   for (const [k, v] of pairs) {
@@ -799,8 +811,8 @@ function bookTable(books) {
             onchange: () => pickToggle(b.id, row, true) })),
         el("td", { class: "c-cover" }, cover(b)),
         el("td", {}, el("div", { class: "strong clip2" }, b.title), b.subtitle ? el("div", { class: "small muted clip" }, b.subtitle) : null, txMark(b.id)),
-        el("td", { class: "hide-sm" }, b.author || span("muted", "—")),
-        el("td", { class: "hide-sm" }, b.narrator || span("muted", "—")),
+        el("td", { class: "hide-sm" }, people(b.author) || span("muted", "—")),
+        el("td", { class: "hide-sm" }, people(b.narrator) || span("muted", "—")),
         el("td", { class: "hide-sm" }, seriesLabel(b) || span("muted", "—")),
         multi ? el("td", { class: "hide-sm muted" }, b.library) : null,
         el("td", { class: "c-num" }, fmtDuration(b.durationMs)),
@@ -1041,7 +1053,7 @@ function bookDetail(b) {
       el("h2", {}, b.title),
       b.subtitle ? el("p", { class: "muted" }, b.subtitle) : null,
       el("div", { style: "margin-top:12px" }, kv([
-        ["Author", b.author], ["Narrator", b.narrator],
+        ["Author", people(b.author, 3)], ["Narrator", people(b.narrator, 3)],
         ["Series", seriesLabel(b)],
         ["Length", fmtDuration(b.durationMs)], ["Published", [b.publishedYear, b.publisher].filter(Boolean).join(", ")],
         ["Language", b.language], ["ISBN", b.isbn], ["ASIN", b.asin],
@@ -1179,7 +1191,7 @@ function matchResult(b, c) {
     c.coverUrl ? el("img", { src: c.coverUrl, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : el("div", { class: "cover blank" }, (c.title || "").slice(0, 2)),
     el("div", { style: "min-width:0" },
       el("div", { class: "strong" }, c.title, c.subtitle ? span("muted", ": " + c.subtitle) : null),
-      el("div", { class: "small" }, (c.authors || []).join(", "), c.narrators?.length ? " · read by " + c.narrators.join(", ") : ""),
+      el("div", { class: "small" }, people(c.authors), c.narrators?.length ? [" · read by ", people(c.narrators)] : ""),
       el("div", { class: "small muted" }, [c.publishedYear, c.publisher].filter(Boolean).join(", "), series, c.durationMs ? " · " + fmtDuration(c.durationMs) : "")),
     el("div", { class: "row" },
       c.coverUrl ? el("label", { class: "check small" }, keepCover, "Cover") : null,
@@ -2062,7 +2074,7 @@ function bulkMatch(books, gaps) {
       el("td", { style: "width:32px" }, pick),
       el("td", { class: "c-cover" }, cover(b)),
       el("td", {}, el("div", { class: "strong clip2" }, b.title), el("div", { class: "small muted" }, b.author || "Unknown author")),
-      gaps ? el("td", { class: "hide-sm" }, gaps(b).map((g) => el("span", { class: "tag", style: "margin:0 4px 4px 0" }, "no " + g))) : el("td", { class: "hide-sm small muted" }, b.author || ""),
+      gaps ? el("td", { class: "hide-sm" }, gaps(b).map((g) => el("span", { class: "tag", style: "margin:0 4px 4px 0" }, "no " + g))) : null,
       found, el("td", { style: "width:40px" }, use));
   }));
   const status = span("small muted grow", "");
@@ -2080,7 +2092,8 @@ function bulkMatch(books, gaps) {
         r.match = best || null;
         r.found.replaceChildren(best ? el("div", { class: "row", style: "flex-wrap:nowrap" },
           best.coverUrl ? el("img", { src: best.coverUrl, alt: "", referrerpolicy: "no-referrer", style: "width:36px;height:36px;border-radius:3px;object-fit:cover" }) : null,
-          el("div", { style: "min-width:0" }, el("div", { class: "clip" }, best.title), el("div", { class: "tiny muted clip" }, (best.authors || []).join(", "), best.narrators?.length ? " · " + best.narrators.join(", ") : ""))) :
+          el("div", { class: "match-pick" }, el("div", { class: "clip" }, best.title),
+            el("div", { class: "tiny muted" }, people(best.authors), best.narrators?.length ? [" · ", people(best.narrators)] : ""))) :
           span("muted", "Nothing found"));
         r.use.disabled = !best;
         r.use.checked = !!best && similar(best.title, r.b.title);
@@ -2110,7 +2123,7 @@ function bulkMatch(books, gaps) {
   return [
     el("div", { class: "toolbar", style: "padding:12px 14px 0" }, provider, find, apply, status),
     el("table", { class: "grid" },
-      el("thead", {}, el("tr", {}, el("th", {}), el("th", { class: "c-cover" }), el("th", {}, "Book"), el("th", { class: "hide-sm" }, gaps ? "Missing" : "Author"), el("th", {}, "Best match"), el("th", {}, "Use"))),
+      el("thead", {}, el("tr", {}, el("th", {}), el("th", { class: "c-cover" }), el("th", {}, "Book"), gaps ? el("th", { class: "hide-sm" }, "Missing") : null, el("th", {}, "Best match"), el("th", {}, "Use"))),
       tbody),
   ];
 }

@@ -436,3 +436,11 @@ tr.picked td { background: color-mix(in srgb, var(--secondary-container) 45%, tr
 @media (max-width: 640px) { .tx-chip-text { display: none; } .tx-chip { padding: 0 7px; } }
 .tx-banner { margin-bottom: 10px; }
 .tx-banner > svg.i { color: var(--primary); flex: none; }
+
+/* long lists of names */
+.more-link { border: 0; padding: 0 2px; background: none; color: var(--primary); font: inherit; cursor: pointer; white-space: nowrap; }
+.more-link:hover { text-decoration: underline; }
+/* Find details: the best match wraps rather than widening the table past the sheet */
+.match-pick { min-width: 0; max-width: 260px; }
+.match-pick .tiny { overflow-wrap: anywhere; }
+.kv dd:has(.people) { white-space: normal; }
