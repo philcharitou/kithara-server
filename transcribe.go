@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -109,6 +110,7 @@ type transcriber struct {
 	bin        string // whisper-cli, or "" when there is none
 	binVAD     bool   // it has a voice-activity detector
 	binChecked time.Time
+	binStamp   fileStamp // of bin when its --help was read
 }
 
 func newTranscriber(s *server) *transcriber {
@@ -163,31 +165,50 @@ func (t *transcriber) installed(m whisperModel) bool {
 // and whether it has voice-activity detection, looking again at most once a minute.
 func (t *transcriber) whisper() (bin string, vad bool) {
 	t.binMu.Lock()
-	defer t.binMu.Unlock()
-	if time.Since(t.binChecked) < time.Minute {
-		return t.bin, t.binVAD
+	bin, vad, known, stamp := t.bin, t.binVAD, t.bin, t.binStamp
+	fresh := time.Since(t.binChecked) < time.Minute
+	if !fresh {
+		t.binChecked = time.Now() // others use the last answer meanwhile
 	}
-	t.binChecked = time.Now()
-	t.bin, t.binVAD = "", false
+	t.binMu.Unlock()
+	if fresh {
+		return bin, vad
+	}
+	bin, vad = "", false
 	candidates := []string{"whisper-cli", "whisper-cpp"}
 	if env := os.Getenv("KITHARA_WHISPER"); env != "" {
 		candidates = []string{env}
 	}
+	var found fileStamp
 	for _, c := range candidates {
 		p, err := exec.LookPath(c)
 		if err != nil {
 			continue
+		}
+		found = stampOf(p)
+		if p == known && found == stamp {
+			bin, vad = known, t.binVADLocked()
+			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		help, _ := exec.CommandContext(ctx, p, "--help").CombinedOutput()
 		cancel()
 		// Make sure it is whisper.cpp (OpenAI's Python whisper takes other arguments).
 		if strings.Contains(string(help), "--output-json") {
-			t.bin, t.binVAD = p, strings.Contains(string(help), "--vad")
+			bin, vad = p, strings.Contains(string(help), "--vad")
 			break
 		}
 	}
-	return t.bin, t.binVAD
+	t.binMu.Lock()
+	t.bin, t.binVAD, t.binStamp = bin, vad, found
+	t.binMu.Unlock()
+	return bin, vad
+}
+
+func (t *transcriber) binVADLocked() bool {
+	t.binMu.Lock()
+	defer t.binMu.Unlock()
+	return t.binVAD
 }
 
 func (t *transcriber) available() bool { bin, _ := t.whisper(); return bin != "" }
@@ -228,9 +249,7 @@ func (t *transcriber) enqueue(reqs []queueRequest, again bool, by string, quota 
 		}
 		var tf transcriptFile
 		if !again {
-			t.s.tmu.Lock()
-			tf, _ = t.s.loadTranscript(rq.book)
-			t.s.tmu.Unlock()
+			tf = t.s.transcribedOf(rq.book)
 		}
 		for _, i := range chapters {
 			k := key{rq.book.ID, i}
@@ -291,7 +310,9 @@ func (t *transcriber) drop(bookID, by string) int {
 		kept = append(kept, j)
 	}
 	t.queue = kept
-	t.saveQueueLocked()
+	if n > 0 {
+		t.saveQueueLocked()
+	}
 	return n
 }
 
@@ -338,9 +359,12 @@ func (t *transcriber) run() {
 			t.queue = t.queue[1:]
 		}
 		t.saveQueueLocked()
-		if err != nil && ctx.Err() == nil {
+		switch {
+		case err != nil && ctx.Err() == nil:
 			t.lastError = fmt.Sprintf("%s, chapter %d: %v", j.BookID, j.Chapter+1, err)
 			log.Printf("transcribe %s", t.lastError)
+		case err == nil:
+			t.lastError = "" // working again
 		}
 		t.mu.Unlock()
 	}
@@ -371,10 +395,7 @@ func (t *transcriber) runJob(ctx context.Context, j transcribeJob) error {
 	status := statusDone
 	if err != nil {
 		status = statusPartial
-		t.s.tmu.Lock()
-		tf, _ := t.s.loadTranscript(b)
-		t.s.tmu.Unlock()
-		if st := chapterStatus(tf, c); st != nil && st.Status == statusDone {
+		if st := chapterStatus(t.s.transcribedOf(b), c); st != nil && st.Status == statusDone {
 			return err // keep the finished one
 		}
 	}
@@ -466,7 +487,7 @@ func joinSentences(ps []Passage) []Passage {
 
 func endsSentence(s string) bool {
 	s = strings.TrimRight(s, `"')]»”’ `)
-	return s == "" || strings.ContainsAny(s[len(s)-1:], ".!?…") || strings.HasSuffix(s, "…")
+	return s == "" || strings.ContainsAny(s[len(s)-1:], ".!?") || strings.HasSuffix(s, "…")
 }
 
 // decodeRange writes [from, to) of the book as 16 kHz mono WAV, cutting it out of
@@ -558,7 +579,7 @@ var progressLine = regexp.MustCompile(`progress\s*=\s*(\d+)%`)
 func (p *progressWriter) Write(b []byte) (int, error) {
 	p.buf = append(p.buf, b...)
 	for {
-		i := strings.IndexAny(string(p.buf), "\r\n")
+		i := bytes.IndexAny(p.buf, "\r\n")
 		if i < 0 {
 			break
 		}
@@ -645,6 +666,7 @@ func download(url, path string, progress func(got, total int64)) error {
 	stall := time.AfterFunc(downloadStall, cancel)
 	defer stall.Stop()
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSHandshakeTimeout: 30 * time.Second, ResponseHeaderTimeout: time.Minute}
+	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 5 {
 			return errors.New("too many redirects")
@@ -838,8 +860,10 @@ func (s *server) putTranscribeSettings(w http.ResponseWriter, r *http.Request, u
 	}
 	t := s.trans
 	t.mu.Lock()
-	t.cfg = in
 	err := writeJSON(filepath.Join(t.dir, "transcription.json"), in)
+	if err == nil {
+		t.cfg = in
+	}
 	t.mu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -943,5 +967,9 @@ func (s *server) transcribeLibrary(w http.ResponseWriter, r *http.Request, user,
 }
 
 func (s *server) clearQueue(w http.ResponseWriter, r *http.Request, user, token string) {
-	writeJSONResponse(w, 200, map[string]int{"removed": s.trans.drop("", "")})
+	n := s.trans.drop("", "")
+	s.trans.mu.Lock()
+	s.trans.lastError = ""
+	s.trans.mu.Unlock()
+	writeJSONResponse(w, 200, map[string]int{"removed": n})
 }

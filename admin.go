@@ -116,8 +116,10 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request, user, token 
 		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
-	if _, exists := s.store.account(in.Username); exists {
-		writeError(w, http.StatusConflict, "that user already exists")
+	// Everything is checked before the user is made, so a bad role or library does not
+	// leave a half-made user behind.
+	if in.Role != "" && in.Role != roleAdmin && in.Role != roleUser {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("a role is %q or %q", roleAdmin, roleUser))
 		return
 	}
 	if in.Libraries != nil {
@@ -126,8 +128,12 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request, user, token 
 			return
 		}
 	}
-	if err := s.store.setPassword(in.Username, in.Password); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := s.store.addUser(in.Username, in.Password); err != nil {
+		code := http.StatusBadRequest
+		if _, exists := s.store.account(in.Username); exists {
+			code = http.StatusConflict
+		}
+		writeError(w, code, err.Error())
 		return
 	}
 	in.Password = ""

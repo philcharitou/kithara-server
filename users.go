@@ -156,14 +156,6 @@ func (s *store) accountQuick(name string) Account {
 	return s.roleLocked(name)
 }
 
-// exists reports whether there is such a user, from a fresh read of the users file.
-func (s *store) exists(name string) bool {
-	s.lockFresh()
-	defer s.mu.Unlock()
-	_, ok := s.userDB[name]
-	return ok
-}
-
 // roleLocked is a user's account without the device count; the caller holds s.mu.
 func (s *store) roleLocked(name string) Account {
 	rec := s.userDB[name]
@@ -289,6 +281,21 @@ func (s *store) setLibraries(name string, libraries []string) error {
 }
 
 func (s *store) removeUser(name string) error {
+	if err := s.dropUser(name); err != nil {
+		return err
+	}
+	// The listening state is small and precious; keep it aside rather than delete it,
+	// once any write to it in progress is done (without s.mu, so nobody else waits).
+	defer s.lockUser(name)()
+	old := filepath.Join(s.dir, "users", name)
+	if _, err := os.Stat(old); err == nil {
+		_ = os.Rename(old, old+".removed-"+time.Now().Format("20060102-150405"))
+	}
+	return nil
+}
+
+// dropUser takes a user and their devices out of the users and tokens files.
+func (s *store) dropUser(name string) error {
 	s.lockFresh()
 	defer s.mu.Unlock()
 	rec, ok := s.userDB[name]
@@ -303,17 +310,7 @@ func (s *store) removeUser(name string) error {
 	if err := s.saveTokens(); err != nil {
 		return err
 	}
-	if err := s.saveUsers(); err != nil {
-		return err
-	}
-	// The listening state is small and precious; keep it aside rather than delete it
-	// (once any write to it in progress is done).
-	defer s.lockUser(name)()
-	old := filepath.Join(s.dir, "users", name)
-	if _, err := os.Stat(old); err == nil {
-		_ = os.Rename(old, old+".removed-"+time.Now().Format("20060102-150405"))
-	}
-	return nil
+	return s.saveUsers()
 }
 
 func (s *store) checkPassword(name, password string) bool {

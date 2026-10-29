@@ -86,12 +86,7 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request, user, to
 		writeError(w, http.StatusForbidden, "the current password is wrong")
 		return
 	}
-	device := ""
-	for _, d := range s.store.devices(user, token) {
-		if d.Current {
-			device = d.Name
-		}
-	}
+	device := s.store.tokenInfo(token).Device
 	if err := s.store.setPassword(user, in.New); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -138,10 +133,11 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user, token stri
 		}
 	}
 	rel := path.Clean("/" + raw)[1:]
-	if rel == "" || rel == "." || strings.HasPrefix(path.Base(rel), ".") {
+	if rel == "" || rel == "." {
 		writeError(w, http.StatusBadRequest, "give the file's path inside the library, like Author/Title/part 1.mp3")
 		return
 	}
+	// No hidden files or folders (that covers .kithara-id), and nothing Windows refuses.
 	for _, part := range strings.Split(rel, "/") {
 		if strings.HasPrefix(part, ".") || strings.ContainsAny(part, `:*?"<>|`) {
 			writeError(w, http.StatusBadRequest, "that path is not allowed")
@@ -282,6 +278,7 @@ func (s *server) putChapters(w http.ResponseWriter, r *http.Request, user, token
 
 // updateOverride edits the saved metadata file of a book in place.
 func updateOverride(dataDir, id string, edit func(map[string]any)) error {
+	defer lockOverride(id)()
 	m := map[string]any{}
 	if err := readJSON(overridePath(dataDir, id), &m); err != nil {
 		return err
@@ -326,7 +323,6 @@ type Settings struct {
 
 type settingsBox struct {
 	mu       sync.Mutex
-	path     string
 	saved    Settings
 	name     string        // from --name
 	interval time.Duration // from --rescan
@@ -397,8 +393,10 @@ func (s *server) putSettings(w http.ResponseWriter, r *http.Request, user, token
 		return
 	}
 	s.settings.mu.Lock()
-	s.settings.saved = in
 	err := writeJSON(s.settingsPath(), in)
+	if err == nil {
+		s.settings.saved = in
+	}
 	s.settings.mu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -504,9 +502,10 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request, user, token st
 	writeJSONResponse(w, 200, map[string]any{"days": days, "users": users, "recent": all})
 }
 
-// loadSettings reads settings.json at start.
-func (s *server) loadSettings(name string, interval time.Duration) {
-	s.settings = &settingsBox{name: name, interval: interval, wake: make(chan struct{}, 1)}
+// loadSettings reads settings.json at start. The rescan interval from the command line
+// is set afterwards, by serve.
+func (s *server) loadSettings(name string) {
+	s.settings = &settingsBox{name: name, wake: make(chan struct{}, 1)}
 	data, err := os.ReadFile(s.settingsPath())
 	if err == nil {
 		if err := json.Unmarshal(data, &s.settings.saved); err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -304,8 +305,10 @@ func readJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
+	// Nothing here writes an empty file, so one is damage (a crash before the data
+	// reached the disk): an error, rather than a users.json read as "no users".
 	if len(strings.TrimSpace(string(data))) == 0 {
-		return nil
+		return fmt.Errorf("%s is empty", filepath.Base(path))
 	}
 	return json.Unmarshal(data, v)
 }
@@ -333,15 +336,29 @@ func writeJSONFile(path string, v any, indent string) error {
 	return writeAtomic(path, buf.Bytes())
 }
 
-// writeAtomic writes to a temporary file and renames it into place, so a crash
-// mid-write leaves the previous file intact.
+// writeAtomic writes to a temporary file of its own, flushes it to the disk and
+// renames it into place, so a crash or a power cut leaves the previous file intact and
+// two writers never share a half-written one.
 func writeAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }

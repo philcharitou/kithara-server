@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -260,14 +261,15 @@ func (s *server) oidcStart(w http.ResponseWriter, r *http.Request) {
 		fail("sign-in through an identity provider is not set up")
 		return
 	}
+	// The limit comes first, so a flood of requests cannot make the server call out.
+	if wait := b.starts.try("ip:"+limitKey(clientIP(r, s.trustProxy)), time.Now()); wait > 0 {
+		fail("too many sign-ins from here; try again in a few minutes")
+		return
+	}
 	disc, err := b.discover(r.Context(), c)
 	if err != nil {
 		log.Printf("oidc: %v", err)
 		fail("the identity provider did not answer; try again later")
-		return
-	}
-	if wait := b.starts.try("ip:"+limitKey(clientIP(r, s.trustProxy)), time.Now()); wait > 0 {
-		fail("too many sign-ins from here; try again in a few minutes")
 		return
 	}
 	state, p := randomString(24), oidcPending{nonce: randomString(24), verifier: randomString(48),
@@ -517,7 +519,7 @@ func (b *oidcBox) verify(ctx context.Context, c OIDCConfig, disc *oidcDiscovery,
 	switch {
 	case strings.TrimSuffix(iss, "/") != c.Issuer:
 		return nil, fmt.Errorf("issuer %q", iss)
-	case !contains(aud, c.ClientID) || len(aud) > 1 && azp != c.ClientID:
+	case !slices.Contains(aud, c.ClientID) || len(aud) > 1 && azp != c.ClientID:
 		return nil, fmt.Errorf("audience %v", aud)
 	case float64(now.Add(-time.Minute).Unix()) > exp:
 		return nil, errors.New("expired")
@@ -525,15 +527,6 @@ func (b *oidcBox) verify(ctx context.Context, c OIDCConfig, disc *oidcDiscovery,
 		return nil, errors.New("wrong nonce")
 	}
 	return claims, nil
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 
 func decodeSegment(seg string, v any) error {
@@ -769,10 +762,12 @@ func (s *server) oidcLinkStart(w http.ResponseWriter, r *http.Request, user, tok
 func (s *server) oidcUnlink(w http.ResponseWriter, r *http.Request, user, token string) {
 	st := s.store
 	st.lockFresh()
-	rec := st.userDB[user]
-	rec.Subject = ""
-	st.userDB[user] = rec
-	err := st.saveUsers()
+	var err error
+	if rec, ok := st.userDB[user]; ok { // (removed meanwhile: nothing to unlink)
+		rec.Subject = ""
+		st.userDB[user] = rec
+		err = st.saveUsers()
+	}
 	st.mu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -152,11 +152,6 @@ var (
 
 const sidecarName = ".kithara-id"
 
-// newLibrary is a library of one folder.
-func newLibrary(root, dataDir string) *library {
-	return newLibraries([]libSpec{{Path: root}}, dataDir)
-}
-
 // newLibraries sets up a library over several folders. Each keeps its path records
 // in ids-<name>.json; the first takes over the ids.json of a single-folder setup.
 func newLibraries(specs []libSpec, dataDir string) *library {
@@ -355,9 +350,14 @@ func (l *library) rescanLocked() error {
 			errs = append(errs, fmt.Errorf("library %q (%s): %w", r.name, r.path, err))
 			continue
 		}
+		// The path records back up the sidecars, so a failed write is tried again on the
+		// next scan rather than forgotten.
 		if r.idsDirty {
-			_ = writeJSON(r.idsPath, r.ids)
-			r.idsDirty = false
+			if err := writeJSON(r.idsPath, r.ids); err != nil {
+				log.Printf("book ids for %q: %v", r.name, err)
+			} else {
+				r.idsDirty = false
+			}
 		}
 	}
 	if err := l.publish(); err != nil {
@@ -609,7 +609,7 @@ func findBooks(root string) ([]bookDir, []string, error) {
 				for _, s := range subs {
 					names = append(names, s.Name())
 				}
-				sort.Slice(names, naturalLess(names))
+				sortNatural(names)
 				for _, n := range names {
 					sub, _ := os.ReadDir(filepath.Join(dir, n))
 					var part []string
@@ -618,7 +618,7 @@ func findBooks(root string) ([]bookDir, []string, error) {
 							part = append(part, filepath.Join(dir, n, e.Name()))
 						}
 					}
-					sort.Slice(part, naturalLess(part))
+					sortNatural(part)
 					audio = append(audio, part...)
 				}
 				if len(audio) > 0 {
@@ -637,7 +637,7 @@ func findBooks(root string) ([]bookDir, []string, error) {
 			childHasBooks = childHasBooks || has
 		}
 		if len(audio) > 0 {
-			sort.Slice(audio, naturalLess(audio))
+			sortNatural(audio)
 			if depth == 0 || childHasBooks {
 				// Audio sitting next to book folders: each file is its own book.
 				loose = append(loose, audio...)
@@ -710,48 +710,63 @@ func plainFiles(dir string) map[string]string {
 	return out
 }
 
-func naturalLess(items []string) func(i, j int) bool {
-	key := func(s string) []any {
-		base := strings.ToLower(filepath.Base(s))
-		var parts []any
-		last := 0
-		for _, m := range numberRe.FindAllStringIndex(base, -1) {
-			if m[0] > last {
-				parts = append(parts, base[last:m[0]])
-			}
-			n, _ := strconv.Atoi(base[m[0]:m[1]])
-			parts = append(parts, n)
-			last = m[1]
-		}
-		if last < len(base) {
-			parts = append(parts, base[last:])
-		}
-		return parts
+// sortNatural sorts file names as people count: "part 2" before "part 10". Each name's
+// key is worked out once, not on every comparison.
+func sortNatural(items []string) {
+	type keyed struct {
+		s   string
+		key []any
 	}
-	return func(i, j int) bool {
-		a, b := key(items[i]), key(items[j])
-		for k := 0; k < len(a) && k < len(b); k++ {
-			switch x := a[k].(type) {
-			case int:
-				if y, ok := b[k].(int); ok {
-					if x != y {
-						return x < y
-					}
-					continue
-				}
-				return true
-			case string:
-				if y, ok := b[k].(string); ok {
-					if x != y {
-						return x < y
-					}
-					continue
-				}
-				return false
-			}
-		}
-		return len(a) < len(b)
+	ks := make([]keyed, len(items))
+	for i, s := range items {
+		ks[i] = keyed{s, naturalKey(s)}
 	}
+	sort.SliceStable(ks, func(i, j int) bool { return naturalBefore(ks[i].key, ks[j].key) })
+	for i := range ks {
+		items[i] = ks[i].s
+	}
+}
+
+func naturalKey(s string) []any {
+	base := strings.ToLower(filepath.Base(s))
+	var parts []any
+	last := 0
+	for _, m := range numberRe.FindAllStringIndex(base, -1) {
+		if m[0] > last {
+			parts = append(parts, base[last:m[0]])
+		}
+		n, _ := strconv.Atoi(base[m[0]:m[1]])
+		parts = append(parts, n)
+		last = m[1]
+	}
+	if last < len(base) {
+		parts = append(parts, base[last:])
+	}
+	return parts
+}
+
+func naturalBefore(a, b []any) bool {
+	for k := 0; k < len(a) && k < len(b); k++ {
+		switch x := a[k].(type) {
+		case int:
+			if y, ok := b[k].(int); ok {
+				if x != y {
+					return x < y
+				}
+				continue
+			}
+			return true
+		case string:
+			if y, ok := b[k].(string); ok {
+				if x != y {
+					return x < y
+				}
+				continue
+			}
+			return false
+		}
+	}
+	return len(a) < len(b)
 }
 
 // probeAll probes files in parallel, one ffprobe per CPU, so the first scan of a big
@@ -949,7 +964,8 @@ func (l *library) idFor(r *libRoot, dir, firstFile string, loose bool) (string, 
 	// by the file's path; carry that id over so its listening position stays attached.
 	preferred := ""
 	l.mu.RLock()
-	if _, ok := r.ids[key]; !ok {
+	_, recorded := r.ids[key]
+	if !recorded {
 		if fileRel, err := filepath.Rel(r.path, firstFile); err == nil {
 			if id := r.ids[filepath.ToSlash(fileRel)]; validID(id) {
 				preferred = id
@@ -958,7 +974,8 @@ func (l *library) idFor(r *libRoot, dir, firstFile string, loose bool) (string, 
 	}
 	l.mu.RUnlock()
 	id := l.idByPath(r, key, preferred)
-	if err := os.WriteFile(p, []byte(id+"\n"), 0o644); err != nil {
+	// On a read-only library this fails every scan; say so once, when the id is new.
+	if err := os.WriteFile(p, []byte(id+"\n"), 0o644); err != nil && !recorded {
 		log.Printf("no sidecar in %s (%v); id kept by path", dir, err)
 	}
 	return id, nil
@@ -1039,7 +1056,13 @@ type probeResult struct {
 	DurationMs int64             `json:"durationMs"`
 	Tags       map[string]string `json:"tags"`
 	Chapters   []Chapter         `json:"chapters"`
+	Err        string            `json:"err,omitempty"`   // ffprobe failed on this file
+	ErrAt      int64             `json:"errAt,omitempty"` // when; tried again a day later
 }
+
+// probeRetry is how long a file ffprobe could not read is left alone (unless it
+// changes), so a broken file is not probed again on every scan.
+const probeRetry = 24 * time.Hour
 
 type probeCache struct {
 	path    string
@@ -1075,19 +1098,25 @@ func (c *probeCache) probe(path string, info os.FileInfo) (probeResult, error) {
 	}
 	if r, ok := c.entries[path]; ok && r.V == probeVersion && r.Size == info.Size() && r.ModTime == info.ModTime().UnixMilli() {
 		c.mu.Unlock()
-		return r, nil
+		if r.Err == "" {
+			return r, nil
+		}
+		if time.Since(time.UnixMilli(r.ErrAt)) < probeRetry {
+			return r, errors.New(r.Err)
+		}
+	} else {
+		c.mu.Unlock()
 	}
-	c.mu.Unlock()
 	r, err := ffprobe(path)
 	if err != nil {
-		return r, err
+		r = probeResult{V: probeVersion, Err: err.Error(), ErrAt: time.Now().UnixMilli()}
 	}
 	r.Size, r.ModTime = info.Size(), info.ModTime().UnixMilli()
 	c.mu.Lock()
 	c.entries[path] = r
 	c.dirty = true
 	c.mu.Unlock()
-	return r, nil
+	return r, err
 }
 
 // save writes the cache if it changed; with prune, it first forgets files the scan
@@ -1116,9 +1145,11 @@ var (
 	haveFFmpeg  = sync.OnceValue(func() bool { _, err := exec.LookPath("ffmpeg"); return err == nil })
 )
 
-// usedTags are the tags tagMeta and chapter naming read; the rest (lyrics, long
-// comments, encoder notes) are not kept in the cache.
+// usedTags are the tags tagMeta and chapter naming read; the rest (encoder notes and
+// the like) are not kept in the cache, and those kept are cut to maxTagLen.
 var usedTags = map[string]bool{}
+
+const maxTagLen = 8000 // a description, at most
 
 // probeVersion goes up when usedTags gains a tag, so files probed before are read again.
 const probeVersion = 2
@@ -1159,7 +1190,7 @@ func ffprobe(path string) (probeResult, error) {
 	r := probeResult{V: probeVersion, DurationMs: int64(secs*1000 + 0.5), Tags: map[string]string{}}
 	for k, v := range raw.Format.Tags {
 		if k = strings.ToLower(k); usedTags[k] {
-			r.Tags[k] = v
+			r.Tags[k] = clip(v, maxTagLen)
 		}
 	}
 	for i, c := range raw.Chapters {

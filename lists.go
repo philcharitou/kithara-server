@@ -32,9 +32,22 @@ const (
 
 var (
 	errNoList    = errors.New("no such list")
-	errTooMany   = errors.New("too many lists")
-	errListShape = errors.New("a list needs a name (up to 100 characters) and at most 2,000 books")
+	errTooMany   = badList("too many lists")
+	errListShape = badList("a list needs a name (up to 100 characters) and at most 2,000 books")
 )
+
+// badList is a list the caller got wrong (400), as against a failure here (500).
+type badList string
+
+func (e badList) Error() string { return string(e) }
+
+func listStatus(err error) int {
+	var bad badList
+	if errors.As(err, &bad) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
 
 // listStore keeps lists in one JSON file each: collections.json in the data folder,
 // users/<name>/playlists.json for playlists.
@@ -91,7 +104,7 @@ func (s *server) apply(l *BookList, in listInput, a Account) error {
 				continue
 			}
 			if s.lib.bookFor(a, id) == nil {
-				return errors.New("no such book: " + id)
+				return badList("no such book: " + id)
 			}
 			seen[id] = true
 			ids = append(ids, id)
@@ -167,7 +180,7 @@ func (s *server) listRoutes(m *http.ServeMux, kind string, shared bool) {
 			return append(lists, l), nil
 		})
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeError(w, listStatus(err), err.Error())
 			return
 		}
 		writeJSONResponse(w, http.StatusCreated, l)
@@ -194,7 +207,7 @@ func (s *server) listRoutes(m *http.ServeMux, kind string, shared bool) {
 		case errors.Is(err, errNoList):
 			writeError(w, http.StatusNotFound, err.Error())
 		case err != nil:
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeError(w, listStatus(err), err.Error())
 		default:
 			writeJSONResponse(w, 200, out)
 		}

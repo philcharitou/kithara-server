@@ -72,7 +72,7 @@ func audioPrint(b *Book) string {
 }
 
 // loadTranscript reads a book's transcript; one made from other audio comes back
-// empty. The caller holds s.tmu.
+// empty. Files are replaced whole (writeAtomic), so reading needs no lock.
 func (s *server) loadTranscript(b *Book) (transcriptFile, error) {
 	var t transcriptFile
 	if err := readJSON(s.transcriptPath(b.ID), &t); err != nil {
@@ -100,7 +100,35 @@ func (s *server) saveChapter(b *Book, c Chapter, entry transcribed, ps []Passage
 	t.Passages = append(t.Passages, ps...)
 	sort.Slice(t.Done, func(i, j int) bool { return t.Done[i].StartMs < t.Done[j].StartMs })
 	sort.SliceStable(t.Passages, func(i, j int) bool { return t.Passages[i].StartMs < t.Passages[j].StartMs })
-	return writeJSONCompact(s.transcriptPath(b.ID), t)
+	if err := writeJSONCompact(s.transcriptPath(b.ID), t); err != nil {
+		return err
+	}
+	s.tdone[b.ID] = doneEntry{t.Audio, t.Done}
+	return nil
+}
+
+// doneEntry is which stretches of a book are transcribed, for the audio it had then.
+type doneEntry struct {
+	audio string
+	done  []transcribed
+}
+
+// transcribedOf is which stretches of a book are transcribed, without the passages:
+// what queueing and status checks need, kept in memory so they do not read a long
+// book's whole transcript each time.
+func (s *server) transcribedOf(b *Book) transcriptFile {
+	print := audioPrint(b)
+	s.tmu.Lock()
+	defer s.tmu.Unlock()
+	if e, ok := s.tdone[b.ID]; ok && e.audio == print {
+		return transcriptFile{Audio: print, Done: e.done}
+	}
+	t, err := s.loadTranscript(b)
+	if err != nil {
+		return transcriptFile{Audio: print}
+	}
+	s.tdone[b.ID] = doneEntry{t.Audio, t.Done}
+	return transcriptFile{Audio: print, Done: t.Done}
 }
 
 // chapterRanges is the book's chapters, or the whole book as one when it has none.
@@ -196,9 +224,7 @@ func (s *server) getTranscript(w http.ResponseWriter, r *http.Request, user, tok
 	if b == nil {
 		return
 	}
-	s.tmu.Lock()
 	t, err := s.loadTranscript(b)
-	s.tmu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -255,7 +281,8 @@ func (s *server) putChapterTranscript(w http.ResponseWriter, r *http.Request, us
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("a passage at %d ms is outside chapter %d", p.StartMs, i))
 			return
 		}
-		p.StartMs, p.EndMs = max(p.StartMs, c.StartMs), min(p.EndMs, c.EndMs)
+		p.StartMs = max(p.StartMs, c.StartMs)
+		p.EndMs = max(min(p.EndMs, c.EndMs), p.StartMs)
 		if text += int64(len(p.Text)); text > maxText {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("that is more text than chapter %d could hold", i))
 			return
@@ -263,10 +290,7 @@ func (s *server) putChapterTranscript(w http.ResponseWriter, r *http.Request, us
 		ps = append(ps, p)
 	}
 	if !s.acct(user).admin() {
-		s.tmu.Lock()
-		t, err := s.loadTranscript(b)
-		s.tmu.Unlock()
-		if st := chapterStatus(t, c); err == nil && st != nil && st.Status == statusDone {
+		if st := chapterStatus(s.transcribedOf(b), c); st != nil && st.Status == statusDone {
 			writeError(w, http.StatusConflict, "that chapter is already transcribed")
 			return
 		}
@@ -290,6 +314,7 @@ func (s *server) deleteTranscript(w http.ResponseWriter, r *http.Request, user, 
 	}
 	s.tmu.Lock()
 	err := os.Remove(s.transcriptPath(b.ID))
+	delete(s.tdone, b.ID)
 	s.tmu.Unlock()
 	if err != nil && !os.IsNotExist(err) {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -331,9 +356,7 @@ func (s *server) searchTranscripts(w http.ResponseWriter, r *http.Request, user,
 	}
 	hits, more := []TranscriptHit{}, false
 	for _, b := range books {
-		s.tmu.Lock()
 		t, err := s.loadTranscript(b)
-		s.tmu.Unlock()
 		if err != nil {
 			continue
 		}

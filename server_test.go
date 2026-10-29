@@ -46,6 +46,11 @@ func testLibrary(t *testing.T) string {
 	return root
 }
 
+// newLibrary is a library of one folder.
+func newLibrary(root, dataDir string) *library {
+	return newLibraries([]libSpec{{Path: root}}, dataDir)
+}
+
 func sampleAudio(t *testing.T) string {
 	t.Helper()
 	// A tagless file, so titles come from folder and file names and the test can tell

@@ -132,6 +132,11 @@ func (l *library) storeLibrary(name, path string) error {
 	}
 	l.scanMu.Lock()
 	defer l.scanMu.Unlock()
+	// Check against libraries.json as it is now: one may have been added from the
+	// command line since the last scan.
+	if err := l.syncStored(); err != nil {
+		return err
+	}
 	if _, ok := l.catalogueRoot(name); ok {
 		return errLibraryExists
 	}
@@ -211,6 +216,7 @@ func (s *server) addLibraryHandler(w http.ResponseWriter, r *http.Request, user,
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	in.Name = strings.TrimSpace(in.Name)
 	for _, li := range s.lib.libraries(s.acct(user)) {
 		if strings.EqualFold(li.Name, in.Name) || in.Name == "" && li.Path == filepath.Clean(strings.TrimSpace(in.Path)) {
 			writeJSONResponse(w, http.StatusCreated, li)

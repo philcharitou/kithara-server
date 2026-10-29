@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -395,11 +396,25 @@ func saveOverride(dataDir, id string, c MatchCandidate) error {
 		return errNothingToKeep
 	}
 	// Edited chapters are kept separately (putChapters); details replace details only.
+	defer lockOverride(id)()
 	old := map[string]any{}
-	if readJSON(overridePath(dataDir, id), &old) == nil && old["chapters"] != nil {
+	if err := readJSON(overridePath(dataDir, id), &old); err != nil {
+		return err
+	}
+	if old["chapters"] != nil {
 		out["chapters"] = old["chapters"]
 	}
 	return writeJSON(overridePath(dataDir, id), out)
+}
+
+// overrideLocks serialises changes to one book's saved metadata: details and chapters
+// are saved by different requests into the same file.
+var overrideLocks sync.Map // book id -> *sync.Mutex
+
+func lockOverride(id string) func() {
+	mu, _ := overrideLocks.LoadOrStore(id, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	return mu.(*sync.Mutex).Unlock
 }
 
 // clearOverride forgets the metadata and cover kept for a book.

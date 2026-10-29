@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -38,14 +39,16 @@ type server struct {
 	known    *knownClients // addresses that have signed in to an account before
 	oidc     *oidcBox
 	trans    *transcriber
-	tmu      sync.Mutex // transcript files
+	tmu      sync.Mutex           // writing transcript files, and tdone
+	tdone    map[string]doneEntry // book id -> what is transcribed (transcribedOf)
 }
 
 func newServer(st *store, lib *library, name string) *server {
 	s := &server{store: st, lib: lib, mux: http.NewServeMux(), authSlots: make(chan struct{}, 4),
 		ipLimit: newLoginLimiter(10, 15*time.Minute), userLimit: newLoginLimiter(30, 15*time.Minute), match: newMatcher(), linkKey: newLinkKey(), started: time.Now(), known: newKnownClients()}
-	s.loadSettings(name, 0)
+	s.loadSettings(name)
 	s.loadOIDC()
+	s.tdone = map[string]doneEntry{}
 	s.trans = newTranscriber(s)
 	m := s.mux
 	m.HandleFunc("GET /api/health", s.health)
@@ -152,6 +155,12 @@ type statusRecorder struct {
 
 // Unwrap lets http.ResponseController reach the connection beneath.
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// ReadFrom keeps sendfile for audio: http.ServeContent copies files through it, and
+// without it every byte would pass through a buffer here.
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	return io.Copy(r.ResponseWriter, src)
+}
 
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
