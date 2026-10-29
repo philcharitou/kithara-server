@@ -693,12 +693,10 @@ let searchTimer = 0;
 
 async function viewLibrary(tools) {
   await loadLibrary();
+  pick.on = true;
+  pick.listeners = [];
   const prefs = state.prefs;
   tools.append(el("button", { class: "btn secondary small", type: "button", onclick: searchTranscriptsSheet }, icon("search"), "Search what's said"));
-  if (state.books.length) {
-    tools.append(el("button", { class: "btn secondary small", type: "button", "aria-pressed": pick.on ? "true" : "false",
-      onclick: () => { if (pick.on) pickEnd(); else pick.on = true; refreshMain(viewLibrary); } }, icon("check"), pick.on ? "Done selecting" : "Select"));
-  }
   if (isAdmin()) {
     tools.append(rescanButton());
   }
@@ -711,7 +709,7 @@ async function viewLibrary(tools) {
   const shelf = el("div");
   const count = span("small muted");
   let limit = PAGE;
-  const fill = () => {
+  let fill = () => {
     const words = state.query.toLowerCase().split(/\s+/).filter(Boolean);
     shelf.querySelectorAll(".cover[data-src]").forEach((box) => coverObserver.unobserve(box)); // the old rows are going
     const shown = state.books
@@ -753,6 +751,12 @@ async function viewLibrary(tools) {
   drawGroup();
   layoutBtns.forEach((b) => { b.hidden = prefs.group !== "books"; });
 
+  pick.refill = fill;
+  // The table has its own select-all box in its header; covers and groups use this one.
+  const allLabel = el("label", { class: "check small" }, pickAllBox(fill), "Select all");
+  const fillAll = fill;
+  fill = () => { fillAll(); allLabel.hidden = prefs.layout !== "grid" && prefs.group === "books"; };
+  pick.refill = fill;
   fill();
   return [
     el("div", { class: "toolbar" },
@@ -760,8 +764,8 @@ async function viewLibrary(tools) {
       el("div", { class: "search" }, icon("search"), el("input", { type: "search", placeholder: "Search title, author, narrator, series", "aria-label": "Search", value: state.query,
         oninput: (e) => { state.query = e.target.value; limit = PAGE; clearTimeout(searchTimer); searchTimer = setTimeout(fill, 150); } })),
       libSelect, sortSelect, layoutBtns),
-    el("div", { class: "toolbar" }, filters, el("span", { class: "grow" }), count),
-    pick.on ? bulkBar(fill) : null,
+    el("div", { class: "toolbar" }, filters, el("span", { class: "grow" }), allLabel, count),
+    bulkBar(fill),
     shelf,
   ].filter(Boolean);
 }
@@ -770,16 +774,19 @@ function bookTable(books) {
   const multi = state.libraries.length > 1;
   return el("div", { class: "table-wrap" }, el("table", { class: "grid" },
     el("thead", {}, el("tr", {},
-      pick.on ? el("th", { class: "c-pick" }) : null, el("th", { class: "c-cover" }), el("th", {}, "Title"), el("th", { class: "hide-sm" }, "Author"), el("th", { class: "hide-sm" }, "Narrator"),
+      pick.on ? el("th", { class: "c-pick" }, pickAllBox(pick.refill)) : null, el("th", { class: "c-cover" }), el("th", {}, "Title"), el("th", { class: "hide-sm" }, "Author"), el("th", { class: "hide-sm" }, "Narrator"),
       el("th", { class: "hide-sm" }, "Series"), multi ? el("th", { class: "hide-sm" }, "Library") : null,
       el("th", { class: "c-num" }, "Length"), el("th", { class: "c-prog" }, "Progress"))),
     el("tbody", {}, books.map((b) => {
       const p = progressOf(b);
-      const open = (row) => pick.on ? pickToggle(b.id, row) : openBook(b.id);
-      const row = el("tr", { tabindex: 0, class: pick.on && pick.ids.has(b.id) ? "picked" : null,
-        onclick: () => open(row), onkeydown: (e) => { if (e.key === "Enter" || pick.on && e.key === " ") { e.preventDefault(); open(row); } } },
-        pick.on ? el("td", { class: "c-pick" }, el("input", { type: "checkbox", tabindex: -1, "aria-label": "Select " + b.title, checked: pick.ids.has(b.id) ? true : null,
-          onclick: (e) => { e.stopPropagation(); pickToggle(b.id, row); } })) : null,
+      const row = el("tr", { tabindex: 0, class: pick.on && pick.ids.has(b.id) ? "picked" : null, onclick: () => openBook(b.id),
+        onkeydown: (e) => {
+          if (e.key === "Enter") openBook(b.id);
+          else if (pick.on && e.key === " ") { e.preventDefault(); pickToggle(b.id, row); }
+        } },
+        pick.on ? el("td", { class: "c-pick", onclick: (e) => { e.stopPropagation(); if (e.target.tagName !== "INPUT") pickToggle(b.id, row); } },
+          el("input", { type: "checkbox", tabindex: -1, "aria-label": "Select " + b.title, checked: pick.ids.has(b.id) ? true : null,
+            onchange: () => pickToggle(b.id, row, true) })) : null,
         el("td", { class: "c-cover" }, cover(b)),
         el("td", {}, el("div", { class: "strong clip2" }, b.title), b.subtitle ? el("div", { class: "small muted clip" }, b.subtitle) : null),
         el("td", { class: "hide-sm" }, b.author || span("muted", "—")),
@@ -794,37 +801,63 @@ function bookTable(books) {
 
 function bookTile(b) {
   const p = progressOf(b);
-  const tile = el("button", { class: "tile" + (pick.on && pick.ids.has(b.id) ? " picked" : ""), type: "button",
-    "aria-pressed": pick.on ? String(pick.ids.has(b.id)) : null,
-    onclick: () => pick.on ? pickToggle(b.id, tile) : openBook(b.id) },
-    pick.on ? el("span", { class: "pick-mark", "aria-hidden": "true" }, icon("check")) : null,
+  const tile = el("button", { class: "tile", type: "button", onclick: () => openBook(b.id) },
     cover(b),
     p && !p.finished && p.positionMs > 0 ? gradientProgress(p.fraction) : null,
     el("div", { class: "strong clip2" }, b.title),
     el("div", { class: "small muted clip" }, b.author || "Unknown author"),
     statusText(b));
-  return tile;
+  if (!pick.on) return tile;
+  const wrap = el("div", { class: "tile-wrap" + (pick.ids.has(b.id) ? " picked" : "") }, tile,
+    el("input", { type: "checkbox", class: "tile-pick", "aria-label": "Select " + b.title, checked: pick.ids.has(b.id) ? true : null,
+      onchange: () => pickToggle(b.id, wrap, true) }));
+  return wrap;
 }
 
 // ------------------------------------------------------------------ picking books
 
-// Select mode on the library: a click picks a book instead of opening it, and a bar
-// offers what can be done to all of them at once.
-const pick = { on: false, ids: new Set(), shown: [], changed: () => {} };
+// Picking books in the library: every row and cover has a checkbox, and once any is
+// ticked a bar offers what can be done to all of them at once. listeners are what to
+// update when the selection changes (the bar, the select-all boxes).
+const pick = { on: false, ids: new Set(), shown: [], listeners: [], refill: () => {} };
+// A listener answers false once its element has gone, and is dropped.
+const pickChanged = () => { pick.listeners = pick.listeners.filter((f) => f() !== false); };
 
 function pickEnd() {
   pick.on = false;
   pick.ids.clear();
 }
 
-function pickToggle(id, node) {
+// pickToggle flips a book; fromBox when its own checkbox already shows the new state.
+function pickToggle(id, node, fromBox = false) {
   if (pick.ids.has(id)) pick.ids.delete(id); else pick.ids.add(id);
   const on = pick.ids.has(id);
   node?.classList.toggle("picked", on);
   const box = node?.querySelector("input[type=checkbox]");
-  if (box) box.checked = on;
-  if (node?.hasAttribute("aria-pressed")) node.setAttribute("aria-pressed", String(on));
-  pick.changed();
+  if (box && !fromBox) box.checked = on;
+  pickChanged();
+}
+
+// pickAllBox ticks every book shown (after filters and search), or none; it shows a
+// dash when only some are.
+function pickAllBox(refill) {
+  let attached = false;
+  const box = el("input", { type: "checkbox", "aria-label": "Select all shown", onchange: () => {
+    if (box.checked) pick.shown.forEach((b) => pick.ids.add(b.id));
+    else pick.shown.forEach((b) => pick.ids.delete(b.id));
+    refill();
+    pickChanged();
+  } });
+  const sync = () => {
+    if (attached && !box.isConnected) return false;
+    attached = box.isConnected;
+    const n = pick.shown.filter((b) => pick.ids.has(b.id)).length;
+    box.checked = n > 0 && n === pick.shown.length;
+    box.indeterminate = n > 0 && n < pick.shown.length;
+  };
+  pick.listeners.push(sync);
+  sync();
+  return box;
 }
 
 const pickedBooks = () => state.books.filter((b) => pick.ids.has(b.id));
@@ -861,15 +894,15 @@ function bulkBar(refill) {
     }));
   }).catch(() => {});
   if (isAdmin()) actions.prepend(run([icon("magic"), "Find details"], (books) => openSheet(`Find details · ${plural(books.length, "book")}`, bulkMatch(books), { wide: true })));
-  const draw = () => { count.textContent = `${pick.ids.size} selected`; };
-  pick.changed = draw;
-  draw();
-  return el("div", { class: "toolbar bulk-bar" },
+  const bar = el("div", { class: "toolbar bulk-bar" },
     count,
-    el("button", { class: "btn ghost small", type: "button", onclick: () => { pick.shown.forEach((b) => pick.ids.add(b.id)); refill(); draw(); } }, "Select all shown"),
-    el("button", { class: "btn ghost small", type: "button", onclick: () => { pick.ids.clear(); refill(); draw(); } }, "Clear"),
+    el("button", { class: "btn ghost small", type: "button", onclick: () => { pick.ids.clear(); refill(); pickChanged(); } }, "Clear"),
     el("span", { class: "grow" }),
     actions);
+  const draw = () => { count.textContent = `${pick.ids.size} selected`; bar.hidden = !pick.ids.size; };
+  pick.listeners.push(draw);
+  draw();
+  return bar;
 }
 
 // addManyToList adds books to one of the user's playlists (or, for an admin, a
