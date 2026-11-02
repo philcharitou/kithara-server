@@ -353,7 +353,8 @@ sudo bash deploy.sh --domain books.example.com --name "Our books"
 ```
 
 It installs Docker, writes `/opt/kithara` (`docker-compose.yml`, `Caddyfile`, `.env`, and
-`books/` for the library folders), opens ports 80 and 443 if ufw is on, starts everything
+`books/` for the library folders), opens ports 80 and 443 (in ufw if it is on, and in the
+iptables rules Oracle Cloud's Ubuntu images ship with), starts everything
 and asks for the first account. Without `--domain` it uses `<ip>.sslip.io`, which needs
 no DNS. Run it again any time; it keeps what is there.
 

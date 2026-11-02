@@ -96,6 +96,20 @@ if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   say "Opening ports 80 and 443 in ufw"
   ufw allow 80/tcp >/dev/null && ufw allow 443/tcp >/dev/null && ufw allow 443/udp >/dev/null
 fi
+# Oracle Cloud's Ubuntu images let only SSH through their own iptables rules (a REJECT
+# at the end of INPUT, kept by netfilter-persistent), whatever the cloud's security list
+# says: let web traffic in ahead of it, and keep that across reboots.
+if command -v iptables >/dev/null && command -v netfilter-persistent >/dev/null; then
+  REJECT_AT="$(iptables -L INPUT --line-numbers -n | awk '$2 == "REJECT" {print $1; exit}')"
+  if [ -n "$REJECT_AT" ]; then
+    say "Opening ports 80 and 443 in iptables (Oracle Cloud)"
+    iptables -C INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null ||
+      iptables -I INPUT "$REJECT_AT" -p tcp -m multiport --dports 80,443 -j ACCEPT
+    iptables -C INPUT -p udp --dport 443 -j ACCEPT 2>/dev/null ||
+      iptables -I INPUT "$REJECT_AT" -p udp --dport 443 -j ACCEPT
+    netfilter-persistent save >/dev/null 2>&1
+  fi
+fi
 
 cd "$DIR"
 PROJECT="$(basename "$DIR")"
