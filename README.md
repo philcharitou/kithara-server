@@ -345,7 +345,7 @@ sees what is mounted into it, and a library can't be inside another one.
 
 **On a server in the cloud.** `deploy/` has a Docker Compose setup with Caddy for HTTPS,
 and a script that sets it all up on a fresh Ubuntu or Debian server (any small VPS:
-Hetzner, Oracle's free ARM servers, Netcup and so on):
+Hetzner, Oracle's free ARM servers, Netcup and so on), or on a computer at home (below):
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/philcharitou/kithara-server/main/deploy/deploy.sh
@@ -357,6 +357,25 @@ It installs Docker, writes `/opt/kithara` (`docker-compose.yml`, `Caddyfile`, `.
 iptables rules Oracle Cloud's Ubuntu images ship with), starts everything
 and asks for the first account. Without `--domain` it uses `<ip>.sslip.io`, which needs
 no DNS. Run it again any time; it keeps what is there.
+
+**On a computer at home.** An old laptop or a mini PC in a cupboard works as well, and
+costs nothing to rent. With `--home` nothing is opened to the internet: the script
+installs [Tailscale](https://tailscale.com) (free for personal use), signs the machine in
+to your Tailscale network, and serves the server there over HTTPS at an address like
+`https://basement.your-tailnet.ts.net`:
+
+```bash
+sudo bash deploy.sh --home --name "Our books"
+```
+
+Install Tailscale on each phone that listens and sign in with the same account (or invite
+the family to your tailnet); the apps then reach the server from anywhere, on Wi-Fi or
+mobile data. If Tailscale asks, turn on HTTPS for your tailnet at the link it prints. On a
+laptop the script also stops closing the lid from suspending it (from the next restart);
+keep it plugged in. The
+choice is kept in `.env` (`COMPOSE_PROFILES` empty for home, `public` for Caddy), so later
+runs and updates work the same; to move it onto the internet, run the script again with
+`--domain`.
 
 To move a server you already run: download a backup from Settings → Backups, copy it to
 the new server, and run the script with `--restore kithara-backup-….zip` (accounts,

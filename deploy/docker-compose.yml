@@ -1,5 +1,10 @@
-# kithara-server behind Caddy, which gets and renews the HTTPS certificate on its own.
-# Settings come from .env beside this file (see .env.example). deploy.sh sets it all up.
+# kithara-server, and (on a public server) Caddy in front of it for HTTPS. Settings come
+# from .env beside this file (see .env.example); deploy.sh sets it all up.
+#
+#   COMPOSE_PROFILES=public   a server on the internet: Caddy gets and renews the
+#                             certificate for KITHARA_DOMAIN on ports 80 and 443
+#   COMPOSE_PROFILES=         at home: only kithara-server, on 127.0.0.1:8080, which
+#                             `tailscale serve` passes on over HTTPS
 #
 #   docker compose up -d          start (or apply changes)
 #   docker compose pull && docker compose up -d     update to the newest release
@@ -12,21 +17,23 @@ services:
     environment:
       KITHARA_NAME: ${KITHARA_NAME:-Kithara}
       KITHARA_LIBRARY: ${KITHARA_LIBRARY:-Audiobooks=/books/Audiobooks}
-      KITHARA_TRUST_PROXY: "1" # behind Caddy: sign-in limits count each client, not the proxy
+      KITHARA_TRUST_PROXY: "1" # behind Caddy or Tailscale: sign-in limits count each client
+    ports:
+      - "127.0.0.1:8080:8080" # this machine only; Caddy or Tailscale bring it outside
     volumes:
       - ./books:/books # library folders (Audiobooks, and any you add later beside it)
       - kithara-data:/data # accounts, progress, transcripts, settings, backups
-    # Not published: only Caddy talks to it.
 
   caddy:
     image: caddy:2.8
+    profiles: ["public"]
     restart: unless-stopped
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"
       - "${HTTPS_PORT:-443}:443/udp"
     environment:
-      KITHARA_DOMAIN: ${KITHARA_DOMAIN:?set KITHARA_DOMAIN in .env}
+      KITHARA_DOMAIN: ${KITHARA_DOMAIN:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data # certificates
