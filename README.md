@@ -343,6 +343,29 @@ docker run -d --name kithara   -v /srv/books:/books -v kithara-data:/data -p 808
 Then **Libraries → Add** can make or pick `/books/Kids` beside it. The container only
 sees what is mounted into it, and a library can't be inside another one.
 
+**On a server in the cloud.** `deploy/` has a Docker Compose setup with Caddy for HTTPS,
+and a script that sets it all up on a fresh Ubuntu or Debian server (any small VPS:
+Hetzner, Oracle's free ARM servers, Netcup and so on):
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/philcharitou/kithara-server/main/deploy/deploy.sh
+sudo bash deploy.sh --domain books.example.com --name "Our books"
+```
+
+It installs Docker, writes `/opt/kithara` (`docker-compose.yml`, `Caddyfile`, `.env`, and
+`books/` for the library folders), opens ports 80 and 443 if ufw is on, starts everything
+and asks for the first account. Without `--domain` it uses `<ip>.sslip.io`, which needs
+no DNS. Run it again any time; it keeps what is there.
+
+To move a server you already run: download a backup from Settings → Backups, copy it to
+the new server, and run the script with `--restore kithara-backup-….zip` (accounts,
+everyone's progress, transcripts, collections and settings come along; devices sign in
+again). Then copy the library folders into `/opt/kithara/books/` with their hidden
+`.kithara-id` files (`rsync -a` or `scp -r` keep them), `chown -R 1000:1000` them, and
+press Rescan: the books keep their ids, so everything lines up. Point the apps at the new
+address. Processor threads for transcription come along too: check them in Settings
+against the new machine.
+
 **Transcribing on the graphics card.** The `-vulkan` image (`ghcr.io/philcharitou/kithara-server:latest-vulkan`,
 amd64) has whisper.cpp built for Vulkan, which is usually several times faster than
 the processor. Give the container the GPU:

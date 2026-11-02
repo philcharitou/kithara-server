@@ -1,0 +1,40 @@
+# kithara-server behind Caddy, which gets and renews the HTTPS certificate on its own.
+# Settings come from .env beside this file (see .env.example). deploy.sh sets it all up.
+#
+#   docker compose up -d          start (or apply changes)
+#   docker compose pull && docker compose up -d     update to the newest release
+#   docker compose logs -f kithara                   see what the server is doing
+
+services:
+  kithara:
+    image: ghcr.io/philcharitou/kithara-server:${KITHARA_IMAGE_TAG:-0.8}
+    restart: unless-stopped
+    environment:
+      KITHARA_NAME: ${KITHARA_NAME:-Kithara}
+      KITHARA_LIBRARY: ${KITHARA_LIBRARY:-Audiobooks=/books/Audiobooks}
+      KITHARA_TRUST_PROXY: "1" # behind Caddy: sign-in limits count each client, not the proxy
+    volumes:
+      - ./books:/books # library folders (Audiobooks, and any you add later beside it)
+      - kithara-data:/data # accounts, progress, transcripts, settings, backups
+    # Not published: only Caddy talks to it.
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    environment:
+      KITHARA_DOMAIN: ${KITHARA_DOMAIN:?set KITHARA_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # certificates
+      - caddy-config:/config
+    depends_on:
+      - kithara
+
+volumes:
+  kithara-data:
+  caddy-data:
+  caddy-config:

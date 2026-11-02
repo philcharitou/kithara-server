@@ -1,0 +1,5 @@
+# HTTPS for kithara-server: Caddy gets a certificate for the domain and passes everything
+# on, range requests included, so seeking in audio works.
+{$KITHARA_DOMAIN} {
+	reverse_proxy kithara:8080
+}
