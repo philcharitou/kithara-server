@@ -442,7 +442,7 @@ Everything the app talks is in the protocol document. Server specifics:
   scripts).
 - Progress records also carry `startedAt` and `finishedAt`, kept by the server.
 - `GET /api/health` lists optional `features`: `collections`, `playlists`,
-  `reportedSessions`, `oidc`, `transcripts`, and `transcription` when whisper.cpp is
+  `reportedSessions`, `folderSessions`, `oidc`, `transcripts`, and `transcription` when whisper.cpp is
   installed.
 - **Transcripts:** `GET /api/books/{id}/transcript` returns `chapters` (`index`,
   `status` DONE or PARTIAL, `model`, `engine`) and `passages` (`chapterIndex`,
@@ -461,7 +461,9 @@ Everything the app talks is in the protocol document. Server specifics:
 - `GET /api/sessions` (optionally `?bookId=` and `?since=` ms) lists listening sessions.
   An app can send its own with `POST /api/sessions`, as `{"sessions": [...]}` (each with
   the app's own `id`; sending an id again replaces it). The server then stops estimating
-  for that device. For other devices it estimates. The apps upload progress when
+  for that device. A book in a folder on the phone rather than on the server is sent as
+  `ext_` and 24 hex digits, with its `title` and `author` (see docs/app-integration.md),
+  so that listening counts in the stats too. For other devices it estimates. The apps upload progress when
   playback pauses, so the stretch between two uploads is counted as listening, and
   joined to the session before it if playback resumed within ten minutes. Jumps that
   playback could not have covered in the time (seeks, a book marked finished) count for

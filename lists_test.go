@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,75 @@ func TestReportedSessions(t *testing.T) {
 	json.Unmarshal(body, &got)
 	if len(got.Sessions) != 1 || got.Sessions[0].ListenedMs != 600000 || got.Sessions[0].Device != "tablet" {
 		t.Fatalf("sessions: %s", body)
+	}
+}
+
+// Listening on a book in a folder on the phone is kept under its ext_ key, with the names
+// the device gave it; other unknown books are still refused.
+func TestFolderSessions(t *testing.T) {
+	ts, _, _, _ := twoLibraryServer(t)
+	kid := loginAs(t, ts, "kid", "battery staple", "tablet")
+	b := catalogueOf(t, ts, kid, "").Books[0]
+	now := time.Now().UnixMilli()
+	report := func(ls ListeningSession) (int, []byte) {
+		res, body := call(t, ts, "POST", "/api/sessions", kid, map[string]any{"sessions": []ListeningSession{ls}})
+		return res.StatusCode, body
+	}
+	ext := "ext_0123456789abcdef01234567"
+	ls := ListeningSession{ID: "f1", BookID: ext, Title: "Dune", Author: "Frank Herbert", StartedAt: now - 600000, EndedAt: now - 300000, EndPositionMs: 300000, ListenedMs: 300000}
+	for range 2 {
+		if code, body := report(ls); code != 200 {
+			t.Fatalf("folder session: %d %s", code, body)
+		}
+		ls.EndedAt, ls.ListenedMs = now, 600000
+	}
+	for _, id := range []string{"ext_0123456789abcdef0123456", "ext_0123456789ABCDEF01234567", "ext_0123456789abcdef012345678", "0123456789abcdef01234567"} {
+		bad := ls
+		bad.ID, bad.BookID = "f2", id
+		if code, _ := report(bad); code != 400 {
+			t.Fatalf("%s was taken: %d", id, code)
+		}
+	}
+	long := ls
+	long.ID, long.Title = "f3", strings.Repeat("é", 201)
+	if code, _ := report(long); code != 400 {
+		t.Fatalf("a 201-character title was taken: %d", code)
+	}
+	// On the server's own books the names are not kept.
+	own := ListeningSession{ID: "a1", BookID: b.ID, Title: "Something else", StartedAt: now - 60000, EndedAt: now, ListenedMs: 60000}
+	if code, body := report(own); code != 200 {
+		t.Fatalf("server book: %d %s", code, body)
+	}
+
+	var got struct{ Sessions []ListeningSession }
+	_, body := call(t, ts, "GET", "/api/sessions", kid, nil)
+	json.Unmarshal(body, &got)
+	if len(got.Sessions) != 2 {
+		t.Fatalf("sessions: %s", body)
+	}
+	for _, s := range got.Sessions {
+		switch s.BookID {
+		case ext:
+			if s.ListenedMs != 600000 || s.Title != "Dune" || s.Author != "Frank Herbert" {
+				t.Fatalf("folder session: %+v", s)
+			}
+		case b.ID:
+			if s.Title != "" || s.Author != "" {
+				t.Fatalf("names kept on a server book: %+v", s)
+			}
+		}
+	}
+	var st struct{ Books []BookStat }
+	_, body = call(t, ts, "GET", "/api/stats", kid, nil)
+	json.Unmarshal(body, &st)
+	if !slices.ContainsFunc(st.Books, func(bs BookStat) bool { return bs.BookID == ext && bs.Title == "Dune" && bs.ListenedMs == 600000 }) {
+		t.Fatalf("stats: %s", body)
+	}
+	var health struct{ Features []string }
+	_, body = call(t, ts, "GET", "/api/health", "", nil)
+	json.Unmarshal(body, &health)
+	if !slices.Contains(health.Features, "folderSessions") {
+		t.Fatalf("health: %s", body)
 	}
 }
 

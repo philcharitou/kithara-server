@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"time"
+	"unicode/utf8"
 )
 
 // Listening sessions, worked out on the server from progress uploads.
@@ -27,6 +28,9 @@ type ListeningSession struct {
 	StartPositionMs int64  `json:"startPositionMs"`
 	EndPositionMs   int64  `json:"endPositionMs"`
 	ListenedMs      int64  `json:"listenedMs"` // wall-clock time, so a 2x hour is 30 minutes
+	// For a book that is not the server's (extBookID): the device's names for it.
+	Title  string `json:"title,omitempty"`
+	Author string `json:"author,omitempty"`
 }
 
 const (
@@ -115,6 +119,14 @@ const (
 
 var clientSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// extBookID is a book in a folder on the phone rather than on this server: "ext_" and
+// the first 12 bytes of SHA-256 of "title|author" (each lower-cased, letters and digits
+// only) in hex, so every device's copy of the book has the same id. Devices report their
+// listening on such books with their own title and author ("folderSessions").
+var extBookID = regexp.MustCompile(`^ext_[0-9a-f]{24}$`)
+
+const maxExtName = 200 // characters of a reported title or author
+
 // checkReported says what is wrong with a reported session, if anything.
 func checkReported(ls ListeningSession, now int64) string {
 	switch {
@@ -128,6 +140,8 @@ func checkReported(ls ListeningSession, now int64) string {
 		return "listenedMs is more than the session lasted"
 	case ls.StartPositionMs < 0 || ls.EndPositionMs < 0:
 		return "positions are not negative"
+	case utf8.RuneCountInString(ls.Title) > maxExtName || utf8.RuneCountInString(ls.Author) > maxExtName:
+		return "a title or author is at most 200 characters"
 	}
 	return ""
 }
@@ -199,6 +213,7 @@ type DayStat struct {
 
 type BookStat struct {
 	BookID         string `json:"bookId"`
+	Title          string `json:"title,omitempty"` // for a book on a phone (extBookID)
 	ListenedMs     int64  `json:"listenedMs"`
 	LastListenedAt int64  `json:"lastListenedAt"`
 	FinishedAt     int64  `json:"finishedAt,omitempty"`
@@ -220,6 +235,9 @@ func buildStats(sessions []ListeningSession, progress []Progress, tz int, now ti
 			byBook[ls.BookID] = b
 		}
 		b.ListenedMs += ls.ListenedMs
+		if ls.Title != "" && ls.EndedAt >= b.LastListenedAt {
+			b.Title = ls.Title
+		}
 		b.LastListenedAt = max(b.LastListenedAt, ls.EndedAt)
 	}
 	for _, p := range progress {

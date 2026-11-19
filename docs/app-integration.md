@@ -9,7 +9,7 @@ Detect features rather than assume them. `/api/health` now lists them:
 
 ```json
 { "ok": true, "protocol": 1, "name": "Phil's shelf", "version": "0.8.0",
-  "features": ["collections", "playlists", "reportedSessions", "oidc", "transcripts", "transcription"] }
+  "features": ["collections", "playlists", "reportedSessions", "folderSessions", "oidc", "transcripts", "transcription"] }
 ```
 
 Anything older has no `features`. In that case, a route that answers `404` means the
@@ -139,6 +139,17 @@ POST /api/sessions
 - From the first report on, **the server stops estimating sessions for that device**.
   Its progress uploads still sync position, but they no longer add sessions. Report
   every session from then on, including the backlog if you have it.
+
+### Books that are not on the server (`folderSessions`)
+
+Listening on a book in a folder on the phone can be reported too, so totals and streaks
+agree across devices. Use `bookId` `ext_` and 24 lower-case hex digits: the first 12
+bytes of SHA-256 of `title|author`, each lower-cased with only letters and digits kept,
+so every device's copy of the book gets the same id. Add the book's `title` and `author`
+(optional, up to 200 characters each); the server keeps them for these books only and
+returns them from `GET /api/sessions`, and `books` in the stats carries the `title`.
+Report to one server only, so a session is not counted twice. Any other id the server
+doesn't know is still refused with `400`.
 
 ### Reading them
 

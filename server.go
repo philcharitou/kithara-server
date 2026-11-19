@@ -362,7 +362,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 
 // features are the optional extensions this server offers (docs/app-integration.md).
 func (s *server) features() []string {
-	f := []string{"collections", "playlists", "reportedSessions", "oidc", "transcripts"}
+	f := []string{"collections", "playlists", "reportedSessions", "folderSessions", "oidc", "transcripts"}
 	if s.trans.available() {
 		f = append(f, "transcription")
 	}
@@ -513,15 +513,20 @@ func (s *server) reportSessions(w http.ResponseWriter, r *http.Request, user, to
 	}
 	now := time.Now().UnixMilli()
 	a := s.acct(user)
-	for _, ls := range in.Sessions {
+	for i, ls := range in.Sessions {
 		if msg := checkReported(ls, now); msg != "" {
 			writeError(w, http.StatusBadRequest, ls.ID+": "+msg)
 			return
+		}
+		// A book in a folder on the phone: kept with the names the device gave it.
+		if extBookID.MatchString(ls.BookID) {
+			continue
 		}
 		if s.lib.bookFor(a, ls.BookID) == nil {
 			writeError(w, http.StatusBadRequest, ls.ID+": no such book")
 			return
 		}
+		in.Sessions[i].Title, in.Sessions[i].Author = "", ""
 	}
 	if err := s.store.markReporting(token); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

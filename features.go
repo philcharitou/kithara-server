@@ -425,6 +425,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request, user, token st
 		Books      int    `json:"books"`
 		LastAt     int64  `json:"lastAt,omitempty"`
 		LastBookID string `json:"lastBookId,omitempty"`
+		LastTitle  string `json:"lastTitle,omitempty"` // for a book on a phone
 	}
 	type recent struct {
 		ListeningSession
@@ -444,7 +445,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request, user, token st
 			sum.ListenedMs += ls.ListenedMs
 			books[ls.BookID] = true
 			if ls.EndedAt > sum.LastAt {
-				sum.LastAt, sum.LastBookID = ls.EndedAt, ls.BookID
+				sum.LastAt, sum.LastBookID, sum.LastTitle = ls.EndedAt, ls.BookID, ls.Title
 			}
 			all = append(all, recent{ls, name})
 		}

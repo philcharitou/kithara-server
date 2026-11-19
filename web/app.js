@@ -1252,7 +1252,7 @@ async function viewStats() {
           const b = byId.get(r.bookId);
           return el("tr", { class: b ? "link" : null, onclick: () => b && openBook(b.id) },
             el("td", { class: "c-cover" }, b ? cover(b) : null),
-            el("td", {}, b?.title || span("muted", "A book no longer in your library")),
+            el("td", {}, b?.title || r.title || span("muted", "A book no longer in your library")),
             el("td", { class: "c-num" }, fmtDuration(r.listenedMs)),
             el("td", { class: "hide-sm muted" }, relative(r.lastListenedAt)),
             el("td", { class: "hide-sm muted" }, fmtDate(r.finishedAt) || "—"));
@@ -2353,7 +2353,7 @@ async function oidcForm() {
 
 async function viewActivity(tools, days = 30) {
   const [act] = await Promise.all([api("/api/activity?days=" + days), state.books.length ? null : loadLibrary()]);
-  const title = (id) => state.books.find((b) => b.id === id)?.title || "A removed book";
+  const title = (id, own) => state.books.find((b) => b.id === id)?.title || own || "A removed book";
   tools.append(el("select", { "aria-label": "Period", style: "width:auto", onchange: (e) => refreshMain((t) => viewActivity(t, Number(e.target.value))) },
     [[7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"], [365, "Last year"]].map(([v, l]) => el("option", { value: v, selected: v === days ? true : null }, l))));
   return [
@@ -2364,7 +2364,7 @@ async function viewActivity(tools, days = 30) {
         el("td", { class: "c-num" }, fmtDuration(u.listenedMs)),
         el("td", { class: "c-num hide-sm" }, u.books),
         el("td", { class: "c-num hide-sm" }, u.sessions),
-        el("td", { class: "muted" }, u.lastAt ? `${title(u.lastBookId)} · ${relative(u.lastAt)}` : "—")))))),
+        el("td", { class: "muted" }, u.lastAt ? `${title(u.lastBookId, u.lastTitle)} · ${relative(u.lastAt)}` : "—")))))),
     el("section", { class: "widget" },
       el("div", { class: "w-head" }, el("h2", {}, "Recent sessions")),
       act.recent.length ? el("table", { class: "grid" },
@@ -2372,7 +2372,7 @@ async function viewActivity(tools, days = 30) {
         el("tbody", {}, act.recent.map((r) => el("tr", {},
           el("td", { class: "muted small" }, fmtDateTime(r.endedAt)),
           el("td", {}, r.user),
-          el("td", {}, title(r.bookId)),
+          el("td", {}, title(r.bookId, r.title)),
           el("td", { class: "hide-sm muted" }, r.device || "—"),
           el("td", { class: "c-num" }, fmtDuration(r.listenedMs)),
           el("td", { class: "hide-sm mono small muted" }, `${fmtClock(r.startPositionMs)} – ${fmtClock(r.endPositionMs)}`))))) :
