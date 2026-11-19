@@ -1,6 +1,6 @@
 # Server plugins: design
 
-Status: proposal, 19 November 2026. Nothing here is built yet.
+Status: phase 1 (plugins in Settings) built, 19 November 2026; the rest is proposed.
 
 ## Goal
 
@@ -59,8 +59,10 @@ All bodies are JSON. Field names follow the Android plugin API.
 GET  /kithara/plugin
 → { "name": "Public domain audiobooks", "version": "1.0.0", "apiVersion": 1,
     "search": { "name": "LibriVox", "description": "…", "emptyQueryTitle": "Recently added" },
+    "downloads": true,                     // it can bring books in
     "accepts": ["…"],                      // kinds of link it can download (hand-offs, below)
-    "settings": [ { "id": "language", "title": "Language", "type": "text" } ] }
+    "settings": [ { "id": "language", "title": "Language", "type": "choice",
+                    "choices": ["English", "French"], "default": "English", "hint": "…" } ] }
 
 POST /kithara/search      { "query": "dune", "page": 0, "settings": {…} }
 → { "results": [ { "id", "title", "author", "narrator", "cover", "year" } ],
@@ -80,9 +82,19 @@ GET  /kithara/downloads/{downloadId}
 DELETE /kithara/downloads/{downloadId}            cancel, and forget its files
 ```
 
-A plugin may offer search only, downloads only, or both. `settings` are what the admin
-filled in under the plugin in Settings (an account, a language, a region); the server
-keeps them in `plugins.json` and sends them with each call, so the plugin can be stateless.
+A plugin may offer search only, downloads only, or both; it must offer one. `apiVersion`
+is the newest it speaks: a newer one than the server's is talked to in the server's.
+
+`settings` describe the plugin's form in Settings, up to 20 fields of type `text`,
+`secret`, `number`, `toggle` (`"true"`/`"false"`) or `choice`. The admin's answers (an
+account, a language, a region) are kept in `plugins.json` and sent with each call, so the
+plugin can be stateless. Answers to `secret` fields, like the plugin's own secret, are never
+sent back to the web page.
+
+Names are trimmed (80 characters, descriptions 300), and kinds of link are lower-case
+letters, digits and `. + -`. The server checks a plugin when it is added, when its address
+or secret changes, on Check, and every 15 minutes, and shows in Settings why one is not
+answering.
 
 ### Hand-offs
 
@@ -145,6 +157,12 @@ while a download is running. The server polls each running download every few se
 and only while one is running.
 
 ## Who may do what
+
+Admins manage plugins at `/api/plugins` (built): `GET` lists them with what each said
+about itself and why one is not answering, `POST` (`url`, `secret`) adds one if it answers
+as a plugin, `PATCH /api/plugins/{id}` changes `url`, `secret`, `enabled`, `search`,
+`download`, `sendUser` and `settings`, `POST /api/plugins/{id}/check` asks it again, and
+`DELETE` removes it. `plugins.json` is in the backups.
 
 - **Admins** add, configure and remove plugins. A plugin's settings and secret are never
   sent to the apps.

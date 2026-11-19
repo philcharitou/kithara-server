@@ -533,6 +533,10 @@ Everything the app talks is in the protocol document. Server specifics:
 - **Notifications (admin):** `GET`/`POST /api/hooks` (`url`, `name`, `format` json, ntfy or
   discord, `events`; none means all), `DELETE /api/hooks/{id}`,
   `POST /api/hooks/{id}/test`.
+- **Plugins (admin):** `GET`/`POST /api/plugins` (`url`, `secret`; added only if it answers
+  as a plugin), `PATCH /api/plugins/{id}` (`url`, `secret`, `enabled`, `search` and
+  `download` as everyone or admins, `sendUser`, `settings`), `POST /api/plugins/{id}/check`,
+  `DELETE /api/plugins/{id}`. Secrets are never returned. See docs/server-plugins.md.
 - **Chapter names (admin):** `GET /api/books/{id}/chapter-names` suggests names from the
   transcript (`index`, `current`, `suggested`, `generic`); save them with
   `PUT /api/books/{id}/chapters`.

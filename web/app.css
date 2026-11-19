@@ -87,6 +87,8 @@ svg.i { width: 20px; height: 20px; fill: currentColor; flex: none; }
 .row.end { justify-content: flex-end; }
 .grow { flex: 1 1 10rem; min-width: 0; }
 .stack { display: grid; gap: 8px; }
+.plugin { display: grid; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; }
+.plugin .t { flex: 1; min-width: 0; }
 .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
 
 /* ------------------------------------------------------------------ controls */

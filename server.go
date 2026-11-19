@@ -41,6 +41,7 @@ type server struct {
 	oidc     *oidcBox
 	trans    *transcriber
 	hooks    *hooks
+	plugins  *pluginBox
 	backups  *backups
 	files    *fileJobs
 	tmu      sync.Mutex           // writing transcript files, and tdone
@@ -55,6 +56,8 @@ func newServer(st *store, lib *library, name string) *server {
 	s.tdone = map[string]doneEntry{}
 	s.trans = newTranscriber(s)
 	s.hooks = newHooks(st.dir)
+	s.plugins = newPlugins(st.dir)
+	go s.plugins.run()
 	s.backups = newBackups(s)
 	go s.backups.run()
 	s.files = newFileJobs(s)
@@ -145,6 +148,11 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("POST /api/hooks", s.withAdmin(s.addHook))
 	m.HandleFunc("DELETE /api/hooks/{id}", s.withAdmin(s.deleteHook))
 	m.HandleFunc("POST /api/hooks/{id}/test", s.withAdmin(s.testHook))
+	m.HandleFunc("GET /api/plugins", s.withAdmin(s.listPlugins))
+	m.HandleFunc("POST /api/plugins", s.withAdmin(s.addPlugin))
+	m.HandleFunc("PATCH /api/plugins/{id}", s.withAdmin(s.patchPlugin))
+	m.HandleFunc("POST /api/plugins/{id}/check", s.withAdmin(s.checkPlugin))
+	m.HandleFunc("DELETE /api/plugins/{id}", s.withAdmin(s.deletePlugin))
 	m.HandleFunc("GET /api/books/{bookId}/chapter-names", s.withAdmin(s.chapterNames))
 	m.HandleFunc("POST /api/books/{bookId}/files/tags", s.withAdmin(s.queueFileJob("tags")))
 	m.HandleFunc("POST /api/books/{bookId}/files/merge", s.withAdmin(s.queueFileJob("merge")))

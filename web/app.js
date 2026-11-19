@@ -2215,7 +2215,8 @@ async function viewSettings() {
       el("p", { class: "tiny muted", style: "margin:8px 0 12px" }, "It holds password hashes: keep it somewhere safe. To restore, unzip it into the data folder of a stopped server. Devices sign in again afterwards."),
       el("div", { class: "row" }, dl),
       await backupsPanel()] }),
-    widget("Notifications", { wide: true, body: await hooksPanel() }));
+    widget("Notifications", { wide: true, body: await hooksPanel() }),
+    widget("Plugins", { wide: true, body: await pluginsPanel() }));
 }
 
 // backupsPanel: daily backups, and the ones kept.
@@ -2304,6 +2305,97 @@ async function hooksPanel() {
       iconBtn("remove", "Remove", async () => {
         try { await api(`/api/hooks/${encodeURIComponent(h.id)}`, { method: "DELETE" }); refreshMain(viewSettings); } catch (e) { toast(e.message); }
       })))) : null,
+    form);
+}
+
+// pluginsPanel: sources added by plugins, small web services that run beside the server
+// (docs/server-plugins.md).
+async function pluginsPanel() {
+  const { plugins } = await api("/api/plugins");
+  const url = el("input", { type: "text", inputmode: "url", placeholder: "http://my-plugin:9000", required: true });
+  const secret = el("input", { type: "password", autocomplete: "new-password" });
+  const add = el("form", { class: "form", onsubmit: async (ev) => {
+    ev.preventDefault();
+    const btn = ev.submitter;
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api("/api/plugins", { method: "POST", body: { url: url.value.trim(), secret: secret.value } });
+      toast(`Added ${r.plugin.info.name}`);
+      refreshMain(viewSettings);
+    } catch (e) { toast(e.message); }
+    if (btn) btn.disabled = false;
+  } },
+  el("label", { class: "field" }, el("span", {}, "Plugin address"), url),
+  el("label", { class: "field" }, el("span", {}, "Secret (as set in the plugin)"), secret),
+  el("div", { class: "wide row end" }, el("button", { class: "btn", type: "submit" }, icon("add"), "Add")));
+  return el("div", { class: "stack" },
+    el("p", { class: "small" }, "Plugins add sources the apps can search, and bring books from them into a library. A plugin is a small web service that runs beside the server; the apps only see what it finds, through this server."),
+    ...plugins.map(pluginCard),
+    add);
+}
+
+function pluginCard({ plugin: p, hasSecret, settings, savedSecrets }) {
+  const info = p.info || { name: p.url, settings: [] };
+  const who = (value) => el("select", {}, [["everyone", "Everyone"], ["admins", "Admins only"]].map(([v, l]) => el("option", { value: v, selected: v === value ? true : null }, l)));
+  const enabled = el("input", { type: "checkbox", checked: p.enabled ? true : null });
+  const search = info.search ? who(p.search) : null;
+  const download = info.downloads ? who(p.download) : null;
+  const sendUser = el("input", { type: "checkbox", checked: p.sendUser ? true : null });
+  const urlIn = el("input", { type: "text", value: p.url });
+  const secretIn = el("input", { type: "password", autocomplete: "new-password", placeholder: hasSecret ? "Saved. Leave empty to keep it" : "" });
+  const fields = (info.settings || []).map((f) => {
+    const v = settings[f.id] ?? f.default ?? "";
+    let input;
+    if (f.type === "choice") input = el("select", {}, ["", ...f.choices].map((c) => el("option", { value: c, selected: c === v ? true : null }, c || "—")));
+    else if (f.type === "toggle") input = el("input", { type: "checkbox", checked: v === "true" ? true : null });
+    else if (f.type === "secret") input = el("input", { type: "password", autocomplete: "new-password", placeholder: savedSecrets.includes(f.id) ? "Saved. Leave empty to keep it" : "" });
+    else input = el("input", { type: f.type === "number" ? "number" : "text", value: v });
+    const read = () => f.type === "toggle" ? String(input.checked) : input.value;
+    const label = f.type === "toggle"
+      ? el("label", { class: "check wide small" }, input, f.title)
+      : el("label", { class: "field" }, el("span", {}, f.title), input);
+    return { id: f.id, read, nodes: [label, f.hint ? el("p", { class: "wide tiny muted" }, f.hint) : null] };
+  });
+  const form = el("form", { class: "form", onsubmit: async (ev) => {
+    ev.preventDefault();
+    const body = { enabled: enabled.checked, sendUser: sendUser.checked, url: urlIn.value.trim() };
+    if (search) body.search = search.value;
+    if (download) body.download = download.value;
+    if (secretIn.value) body.secret = secretIn.value;
+    if (fields.length) body.settings = Object.fromEntries(fields.map((f) => [f.id, f.read()]));
+    try {
+      const r = await api(`/api/plugins/${encodeURIComponent(p.id)}`, { method: "PATCH", body });
+      toast(r.plugin.error ? "Saved, but the plugin isn't answering: " + r.plugin.error : "Plugin saved");
+      refreshMain(viewSettings);
+    } catch (e) { toast(e.message); }
+  } },
+  el("label", { class: "check wide small" }, enabled, "On"),
+  search ? el("label", { class: "field" }, el("span", {}, "Who can search it"), search) : null,
+  download ? el("label", { class: "field" }, el("span", {}, "Who can bring books in from it"), download) : null,
+  ...fields.flatMap((f) => f.nodes),
+  el("label", { class: "field" }, el("span", {}, "Address"), urlIn),
+  el("label", { class: "field" }, el("span", {}, "Secret"), secretIn),
+  el("label", { class: "check wide small" }, sendUser, "Tell the plugin who is asking (for a plugin that keeps an account per person)"),
+  el("div", { class: "wide row end" }, el("button", { class: "btn", type: "submit" }, "Save")));
+  const offers = [info.search ? `Search: ${info.search.name}` : null, info.downloads ? "Brings books in" : null].filter(Boolean).join(" · ");
+  const status = p.error
+    ? el("div", { class: "tiny err" }, `Not answering: ${p.error}`)
+    : el("div", { class: "tiny muted" }, [offers, info.version ? "version " + info.version : null].filter(Boolean).join(" · "));
+  return el("div", { class: "plugin" },
+    el("div", { class: "row", style: "flex-wrap:nowrap" },
+      span("t clip", el("div", { class: "strong" }, info.name, p.enabled ? null : span("muted", " (off)")), status),
+      el("button", { class: "btn ghost small", type: "button", onclick: async (ev) => {
+        ev.currentTarget.disabled = true;
+        try {
+          const r = await api(`/api/plugins/${encodeURIComponent(p.id)}/check`, { method: "POST" });
+          toast(r.plugin.error ? "It isn't answering: " + r.plugin.error : "It answers");
+          refreshMain(viewSettings);
+        } catch (e) { toast(e.message); }
+      } }, "Check"),
+      iconBtn("remove", "Remove " + info.name, async () => {
+        if (!confirm(`Remove ${info.name}? Its settings are forgotten.`)) return;
+        try { await api(`/api/plugins/${encodeURIComponent(p.id)}`, { method: "DELETE" }); refreshMain(viewSettings); } catch (e) { toast(e.message); }
+      })),
     form);
 }
 
