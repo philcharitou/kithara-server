@@ -87,7 +87,7 @@ func writeBackup(dir string, w io.Writer) error {
 		}
 		keep := rel == "users.json" || rel == "libraries.json" || rel == "settings.json" || rel == "ids.json" ||
 			rel == "collections.json" || rel == "oidc.json" || rel == "transcription.json" || rel == "backups.json" ||
-			rel == "hooks.json" || rel == "plugins.json" || strings.HasPrefix(rel, "transcripts/") ||
+			rel == "hooks.json" || rel == "plugins.json" || rel == "downloads.json" || strings.HasPrefix(rel, "transcripts/") ||
 			strings.HasPrefix(rel, "ids-") || strings.HasPrefix(rel, "users/") || strings.HasPrefix(rel, "metadata/") ||
 			strings.HasPrefix(rel, "covers/") && strings.Contains(path.Base(rel), "-match.")
 		if !keep || strings.HasSuffix(rel, ".tmp") {

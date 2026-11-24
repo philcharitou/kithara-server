@@ -18,11 +18,12 @@ RUN apk add --no-cache git cmake make g++ \
  && install -m 755 /whisper/build/bin/whisper-cli /usr/local/bin/whisper-cli
 
 FROM alpine:3.20
-RUN apk add --no-cache ffmpeg ca-certificates libstdc++ libgomp && adduser -D -h /data kithara
+RUN apk add --no-cache ffmpeg ca-certificates libstdc++ libgomp && adduser -D -h /data kithara \
+ && install -d -o kithara -g kithara -m 0777 /incoming
 COPY --from=whisper /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
 COPY --from=build /kithara-server /usr/local/bin/kithara-server
 USER kithara
-ENV KITHARA_LIBRARY=/library KITHARA_DATA=/data KITHARA_ADDR=:8080
+ENV KITHARA_LIBRARY=/library KITHARA_DATA=/data KITHARA_ADDR=:8080 KITHARA_INCOMING=/incoming
 VOLUME ["/data"]
 EXPOSE 8080
 ENTRYPOINT ["kithara-server"]

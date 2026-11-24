@@ -303,6 +303,20 @@ GET /api/search/{source}/results/{id}            the same, plus "description" (p
 - `502` means the source didn't answer (the message says why); show it and let the user
   try again.
 
+Where a source has `canDownload`, the user can bring a result into a library they can see:
+
+```
+POST   /api/downloads  { "source", "id", "library": "Kids" }   201 with the download
+GET    /api/downloads                                          { "downloads": [ … ] }, newest first
+DELETE /api/downloads/{id}                                     stop it, or take it off the list
+```
+
+A download has `title`, `author`, `library`, `state` (QUEUED, DOWNLOADING, PAUSED,
+MOVING, FINISHED, FAILED), `progress` (0 to 1), `bytesPerSecond`, `error`, `unavailable`
+and, once FINISHED, `bookId`: refresh the library and the book is there. Ask
+`GET /api/downloads` every few seconds while one is running. `429`: a listener has 3
+running already.
+
 ## 11. Protocol document
 
 `docs/kithara-sync-protocol.md` (in the Android repo) and the site copy still describe

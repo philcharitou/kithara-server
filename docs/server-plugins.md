@@ -1,6 +1,6 @@
 # Server plugins: design
 
-Status: phases 1 and 2 (plugins in Settings, search) built, 24 November 2026; downloads and the rest are proposed.
+Status: phases 1 to 3 (plugins in Settings, search, downloads) built, 24 November 2026; the reference plugin and the apps are proposed.
 
 ## Goal
 
@@ -72,7 +72,7 @@ POST /kithara/preview     { "id": "…", "settings": {…} }
 → { "id", "title", "author", "narrator", "cover", "description", "lengthSeconds",
     "sizeBytes", "files", "format", "language" }
 
-POST /kithara/download    { "downloadId": "d_…", "id": "…" | "link": "…", "settings": {…} }
+POST /kithara/download    { "downloadId": "d_…", "folder": "d_…", "id": "…" | "link": "…", "settings": {…} }
 → { "ok": true }  or  { "ok": false, "error": "…" }  or  { "ok": true, "open": "<link>" }
 
 GET  /kithara/downloads/{downloadId}
@@ -108,18 +108,42 @@ nothing of each other; the server knows no kinds of its own.
 
 The server owns the library folders and is the only one that writes into them, as on
 Android. Plugins write into a shared **incoming** folder instead: `/incoming` in the
-server's container, mounted into the plugin's as well. Each download gets
-`/incoming/<downloadId>/`, which the plugin fills.
+server's image (`KITHARA_INCOMING`; without it, `incoming` in the data folder), mounted
+into the plugin's container as well:
+
+```yaml
+services:
+  kithara:
+    volumes: [incoming:/incoming, …]
+  my-plugin:
+    image: …
+    volumes: [incoming:/incoming]
+volumes:
+  incoming:
+```
+
+Before asking the plugin, the server makes `/incoming/<folder>/` (the `folder` it sends,
+which is the download's id), writable by anyone, so a plugin running as another user can
+fill it. Folders inside it should be writable by the server too (run the plugin as user
+1000, or with umask 000), or the server copies instead of moving and can't tidy up.
 
 When the plugin reports `FINISHED`, the server:
-1. Checks the files: audio, covers, `.cue`, `.nfo` and the metadata files the scanner
-   already reads; no links, nothing outside the folder; within the size limit. Anything
-   else is left out and listed on the download.
-2. Moves them into the chosen library as `Author/Title/` (from the preview, cleaned for
-   file names), or into the folder the user picked.
-3. Rescans that library, tells the plugin to forget the download (`DELETE`), and removes
-   the incoming folder.
+1. Checks the files: audio, pictures, `.cue`, `.nfo`, `.opf`, `.txt` and `.json` (the files
+   the scanner reads), at most two folders deep, 50 GB in all. Links, hidden files and
+   anything else are left out and listed on the download (`skipped`). No audio at all
+   fails it.
+2. Moves them into the chosen library as `Author/Title/` (the result's names, made safe
+   for any file system; `Title (2)` when that is taken). Unless the download brought a
+   `metadata.json` or an `.opf` of its own, it writes one with the result's title, author,
+   narrator, year, language and description, so the book is named as the user saw it
+   whatever the files' tags say.
+3. Rescans, notes the new book's id on the download (`bookId`), tells the plugin to forget
+   it (`DELETE`), and removes the incoming folder.
 4. Sends the `download.finished` webhook, or `download.failed` with the reason.
+
+The plugin's `GET /kithara/downloads/{id}` is asked every 3 seconds while a download is
+running, and not at all otherwise. A plugin's `FAILED` (with its `error`) fails the
+download and the plugin is told to forget it.
 
 The book then appears on every device like any other, with its id kept from then on.
 Auto-transcribe and metadata matching apply to it as to a book copied in by hand.
@@ -170,9 +194,25 @@ Each call to a plugin carries `settings` (the admin's answers over the plugin's 
 and, if the admin turned it on, `user`. Search and preview calls time out after 10
 seconds, and the server makes at most 16 plugin calls at once.
 
-Progress reaches the apps the way the transcription queue does: `GET /api/downloads`
-while a download is running. The server polls each running download every few seconds,
-and only while one is running.
+`POST /api/downloads` takes `{source, id, library}` (the library's name) and answers
+`201` with the download, `403` when the user may not download from that source, `400` for
+a library they can't see, `429` when a listener already has 3 running, and `502` when the
+source (or a hand-off's plugin) refuses, with its reason. A download is:
+
+```
+{ "id": "d_…", "user", "source", "plugin", "resultId", "title", "author", "narrator",
+  "year", "language", "library",
+  "state": "QUEUED|DOWNLOADING|PAUSED|MOVING|FINISHED|FAILED", "progress": 0.42,
+  "bytesPerSecond", "sizeBytes", "error", "unavailable", "skipped": […], "bookId",
+  "createdAt", "updatedAt" }
+```
+
+`MOVING` is the server moving the files in; `FINISHED` means the book is in the library
+(`bookId`); `unavailable` means the plugin isn't answering just now. Progress reaches the
+apps the way the transcription queue does: ask `GET /api/downloads` every few seconds
+while one is running. `DELETE /api/downloads/{id}` stops a running one (the plugin is told
+to forget it) or takes one that is over off the list; one that is `MOVING` can't be. The
+server keeps the last 200.
 
 ## Who may do what
 
@@ -186,8 +226,8 @@ as a plugin, `PATCH /api/plugins/{id}` changes `url`, `secret`, `enabled`, `sear
   sent to the apps.
 - **Per plugin,** the admin chooses who may search it (everyone, or admins only) and who
   may download from it (admins only by default, or everyone).
-- A download can only go into a library the user can see, and a listener's downloads count
-  against a limit the admin sets (how many at once).
+- A download can only go into a library the user can see, and a listener has at most 3
+  running at once. A hand-off goes only to a plugin the user may download from.
 - The server tells a plugin which user is asking only if the admin turns that on for the
   plugin, for a plugin that keeps per-person accounts. Otherwise plugins see no names.
 
@@ -200,6 +240,7 @@ as a plugin, `PATCH /api/plugins/{id}` changes `url`, `secret`, `enabled`, `sear
   plugin's own state.
 - A download whose files fail the checks: `FAILED`, with what was wrong, and its incoming
   folder kept for a day so the admin can look.
+- A plugin removed while one of its downloads runs: that download fails.
 - A plugin with a newer `apiVersion` than the server: the server uses its own version and
   ignores what it does not know. Older: the server hides what that version lacks.
 
@@ -232,8 +273,8 @@ The apps' part is generic, and stays so:
 5. **The apps:** the Search tab on iPhone and Android drawn from the server, beside the
    Android plugins' sources.
 
-Phases 1 to 3 are the server; each leaves a working state. Rough size: phase 1 one session,
-2 one, 3 two, 4 one.
+Phases 1 to 3 are the server, and are built; each leaves a working state. Phase 4 is about
+a session.
 
 ## Open questions
 
@@ -245,4 +286,5 @@ Phases 1 to 3 are the server; each leaves a working state. Rough size: phase 1 o
 3. Shared incoming folder for all plugins, or one per plugin? One per plugin keeps a
    misbehaving plugin out of the others' downloads, at the cost of one more mount each.
 4. Should listeners see each other's downloads, as they see each other's books once they
-   land?
+   land? (Today each sees their own; admins see everyone's.)
+5. Should the limit of 3 running downloads per listener be a setting?

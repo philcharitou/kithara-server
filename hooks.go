@@ -34,7 +34,7 @@ const (
 )
 
 var hookEvents = []string{eventBookAdded, eventTranscriptionDone, eventTranscriptionFail, eventBackupDone, eventBackupFailed,
-	eventFilesDone, eventFilesFailed, eventScanProblems}
+	eventFilesDone, eventFilesFailed, eventScanProblems, eventDownloadDone, eventDownloadFailed}
 
 type Hook struct {
 	ID     string   `json:"id"`

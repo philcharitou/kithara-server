@@ -29,11 +29,12 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg ca-certificates libvulkan1 mesa-vulkan-drivers libgomp1 \
  && rm -rf /var/lib/apt/lists/* /usr/share/vulkan/icd.d/lvp_icd*.json \
- && useradd --create-home --home-dir /data kithara
+ && useradd --create-home --home-dir /data kithara \
+ && install -d -o kithara -g kithara -m 0777 /incoming
 COPY --from=whisper /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
 COPY --from=build /kithara-server /usr/local/bin/kithara-server
 USER kithara
-ENV KITHARA_LIBRARY=/library KITHARA_DATA=/data KITHARA_ADDR=:8080
+ENV KITHARA_LIBRARY=/library KITHARA_DATA=/data KITHARA_ADDR=:8080 KITHARA_INCOMING=/incoming
 VOLUME ["/data"]
 EXPOSE 8080
 ENTRYPOINT ["kithara-server"]

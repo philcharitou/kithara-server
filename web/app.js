@@ -2274,6 +2274,7 @@ const EVENT_NAMES = {
   "book.added": "A book is added", "transcription.finished": "A book is transcribed", "transcription.failed": "Transcribing fails",
   "backup.finished": "A backup is made", "backup.failed": "A backup fails", "files.finished": "A merge or tag write is done",
   "files.failed": "A merge or tag write fails", "scan.problems": "A scan can't use some files",
+  "download.finished": "A book is brought in from a source", "download.failed": "Bringing a book in fails",
 };
 
 // hooksPanel: webhooks, for people who want the server to tell something else.
@@ -3154,6 +3155,8 @@ const finder = { source: "", q: "", shownQ: null, results: [], page: 0, hasMore:
 
 async function viewSearch() {
   if (!state.sources.some((x) => x.id === finder.source)) Object.assign(finder, { source: state.sources[0].id, shownQ: null });
+  const canDownload = state.sources.some((x) => x.canDownload);
+  const [downloads] = await Promise.all([canDownload || isAdmin() ? api("/api/downloads").then((r) => r.downloads) : [], state.books.length ? null : loadLibrary()]);
   const box = el("input", { type: "search", value: finder.q, placeholder: "Title, author or narrator", "aria-label": "Search for" });
   const pickSource = state.sources.length > 1 ? el("select", { "aria-label": "Source", style: "width:auto", onchange: (e) => {
     Object.assign(finder, { source: e.target.value, shownQ: null });
@@ -3175,6 +3178,7 @@ async function viewSearch() {
   } }, "More");
   const heading = finder.q ? (finder.total >= 0 ? `${finder.total.toLocaleString()} found for “${finder.q}”` : `Found for “${finder.q}”`) : (source.emptyQueryTitle || source.name);
   return [
+    downloadsPanel(downloads),
     form,
     source.description ? el("p", { class: "small muted", style: "margin:6px 0 0" }, source.description) : null,
     el("h2", { class: "section-title" }, heading),
@@ -3232,8 +3236,66 @@ async function openResult(source, r) {
     el("div", { class: "result-head" },
       resultCover(p),
       el("div", { class: "kv" }, facts.flatMap(([k, v]) => [el("span", { class: "muted" }, k), el("span", {}, String(v))]))),
+    state.sources.find((x) => x.id === source)?.canDownload ? addToLibrary(source, p) : null,
     p.description ? el("div", { class: "result-text" }, p.description.split("\n\n").map((t) => el("p", {}, t))) : null,
   ], { wide: true });
+}
+
+// addToLibrary: the library to bring a result into, and the button that starts it.
+function addToLibrary(source, p) {
+  const libs = state.libraries.map((l) => l.name);
+  if (!libs.length) return null;
+  const pickLib = el("select", { "aria-label": "Library", style: "width:auto" }, libs.map((n) => el("option", { value: n, selected: n === state.prefs.library ? true : null }, n)));
+  const go = el("button", { class: "btn", type: "button", onclick: async () => {
+    go.disabled = true;
+    try {
+      await api("/api/downloads", { method: "POST", body: { source, id: p.id, library: pickLib.value } });
+      dialog.close();
+      toast(`Bringing ${p.title} into ${pickLib.value}`);
+      if (state.view === "search") refreshMain(viewSearch);
+    } catch (e) { toast(e.message); go.disabled = false; }
+  } }, icon("download"), "Add to library");
+  return el("div", { class: "row", style: "margin-top:14px" }, libs.length > 1 ? pickLib : null, go,
+    libs.length === 1 ? el("span", { class: "small muted" }, "into " + libs[0]) : null);
+}
+
+const DL_STATE = { QUEUED: "Waiting", DOWNLOADING: "Downloading", PAUSED: "Paused", MOVING: "Moving into the library", FINISHED: "In the library", FAILED: "Failed" };
+
+// downloadsPanel: the books being brought in, and the last ones; it looks again every
+// few seconds while one is running and the Search page is open.
+function downloadsPanel(list) {
+  clearTimeout(finder.timer);
+  if (!list.length) return null;
+  const running = list.some((d) => ["QUEUED", "DOWNLOADING", "PAUSED", "MOVING"].includes(d.state));
+  if (running) finder.timer = setTimeout(() => {
+    if (state.view !== "search" || !state.me) return;
+    if (dialog.open) downloadsPanel(list); // look again once the sheet is closed
+    else refreshMain(viewSearch);
+  }, 3000);
+  const line = (d) => {
+    const busy = d.state === "DOWNLOADING" || d.state === "QUEUED" || d.state === "PAUSED";
+    const detail = d.state === "FAILED" ? el("span", { class: "err" }, d.error || "Failed")
+      : d.unavailable ? "The plugin isn't answering"
+        : [DL_STATE[d.state] || d.state, busy && d.progress ? Math.round(d.progress * 100) + "%" : null,
+          d.bytesPerSecond ? fmtBytes(d.bytesPerSecond) + "/s" : null, d.skipped?.length ? `${d.skipped.length} file${d.skipped.length > 1 ? "s" : ""} left out` : null].filter(Boolean).join(" · ");
+    const open = d.state === "FINISHED" && d.bookId ? el("button", { class: "btn ghost small", type: "button", onclick: async () => {
+      state.loadedAt = 0;
+      await loadLibrary();
+      if (state.books.some((b) => b.id === d.bookId)) openBook(d.bookId); else toast("It isn't in the library yet; try again in a moment");
+    } }, "Open") : null;
+    return el("div", {},
+      span("t", el("div", { class: "strong clip" }, d.title, d.author ? span("muted", " · " + d.author) : null),
+        el("div", { class: "tiny muted clip" }, [d.library, isAdmin() && d.user !== state.me.name ? d.user : null].filter(Boolean).join(" · "), " — ", detail),
+        busy ? gradientProgress(d.progress || 0) : null),
+      open,
+      iconBtn(busy ? "close" : "remove", busy ? "Stop" : "Take off the list", async () => {
+        if (busy && !confirm(`Stop bringing in ${d.title}?`)) return;
+        try { await api(`/api/downloads/${encodeURIComponent(d.id)}`, { method: "DELETE" }); refreshMain(viewSearch); } catch (e) { toast(e.message); }
+      }));
+  };
+  return el("section", { class: "widget", style: "margin-bottom:16px" },
+    el("div", { class: "w-head" }, el("h2", {}, "Brought in")),
+    el("div", { class: "lines", style: "padding:4px 14px 8px" }, list.slice(0, 8).map(line)));
 }
 
 // ------------------------------------------------------------------ start

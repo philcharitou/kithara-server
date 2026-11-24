@@ -541,6 +541,11 @@ Everything the app talks is in the protocol document. Server specifics:
   search; `GET /api/search?source=&q=&page=` searches one; `GET
   /api/search/{source}/results/{id}` shows one result; covers come through the server.
   The web page shows Search in the sidebar when there is a source.
+- **Downloads (from a source):** `POST /api/downloads` (`source`, `id`, `library`), `GET
+  /api/downloads` (yours; an admin's, everyone's), `DELETE /api/downloads/{id}`. The
+  server moves the files into the library as Author/Title and rescans. Plugins fill a
+  folder in `KITHARA_INCOMING` (`/incoming` in the image), which they must share with the
+  server. Webhook events `download.finished` and `download.failed`.
 - **Chapter names (admin):** `GET /api/books/{id}/chapter-names` suggests names from the
   transcript (`index`, `current`, `suggested`, `generic`); save them with
   `PUT /api/books/{id}/chapters`.

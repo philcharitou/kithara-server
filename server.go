@@ -32,20 +32,21 @@ type server struct {
 	authWaiting        atomic.Int32  // and waiting for a slot
 	trustProxy         bool          // take the client address from X-Forwarded-For
 
-	match    *matcher
-	linkKey  []byte // signs download and audio links
-	started  time.Time
-	settings *settingsBox
-	lists    listStore
-	known    *knownClients // addresses that have signed in to an account before
-	oidc     *oidcBox
-	trans    *transcriber
-	hooks    *hooks
-	plugins  *pluginBox
-	backups  *backups
-	files    *fileJobs
-	tmu      sync.Mutex           // writing transcript files, and tdone
-	tdone    map[string]doneEntry // book id -> what is transcribed (transcribedOf)
+	match     *matcher
+	linkKey   []byte // signs download and audio links
+	started   time.Time
+	settings  *settingsBox
+	lists     listStore
+	known     *knownClients // addresses that have signed in to an account before
+	oidc      *oidcBox
+	trans     *transcriber
+	hooks     *hooks
+	plugins   *pluginBox
+	downloads *downloads
+	backups   *backups
+	files     *fileJobs
+	tmu       sync.Mutex           // writing transcript files, and tdone
+	tdone     map[string]doneEntry // book id -> what is transcribed (transcribedOf)
 }
 
 func newServer(st *store, lib *library, name string) *server {
@@ -59,6 +60,8 @@ func newServer(st *store, lib *library, name string) *server {
 	s.plugins = newPlugins(st.dir)
 	go s.plugins.run()
 	go s.trimCoverCache()
+	s.downloads = newDownloads(s)
+	go s.downloads.run()
 	s.backups = newBackups(s)
 	go s.backups.run()
 	s.files = newFileJobs(s)
@@ -158,6 +161,9 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("GET /api/search", s.withUser(s.search))
 	m.HandleFunc("GET /api/search/{source}/results/{id}", s.withUser(s.searchPreview))
 	m.HandleFunc("GET /api/search/{source}/cover", s.withUser(s.searchCover))
+	m.HandleFunc("GET /api/downloads", s.withUser(s.listDownloads))
+	m.HandleFunc("POST /api/downloads", s.withUser(s.startDownload))
+	m.HandleFunc("DELETE /api/downloads/{id}", s.withUser(s.cancelDownload))
 	m.HandleFunc("GET /api/books/{bookId}/chapter-names", s.withAdmin(s.chapterNames))
 	m.HandleFunc("POST /api/books/{bookId}/files/tags", s.withAdmin(s.queueFileJob("tags")))
 	m.HandleFunc("POST /api/books/{bookId}/files/merge", s.withAdmin(s.queueFileJob("merge")))
