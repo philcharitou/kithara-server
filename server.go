@@ -58,6 +58,7 @@ func newServer(st *store, lib *library, name string) *server {
 	s.hooks = newHooks(st.dir)
 	s.plugins = newPlugins(st.dir)
 	go s.plugins.run()
+	go s.trimCoverCache()
 	s.backups = newBackups(s)
 	go s.backups.run()
 	s.files = newFileJobs(s)
@@ -153,6 +154,10 @@ func newServer(st *store, lib *library, name string) *server {
 	m.HandleFunc("PATCH /api/plugins/{id}", s.withAdmin(s.patchPlugin))
 	m.HandleFunc("POST /api/plugins/{id}/check", s.withAdmin(s.checkPlugin))
 	m.HandleFunc("DELETE /api/plugins/{id}", s.withAdmin(s.deletePlugin))
+	m.HandleFunc("GET /api/search/sources", s.withUser(s.searchSources))
+	m.HandleFunc("GET /api/search", s.withUser(s.search))
+	m.HandleFunc("GET /api/search/{source}/results/{id}", s.withUser(s.searchPreview))
+	m.HandleFunc("GET /api/search/{source}/cover", s.withUser(s.searchCover))
 	m.HandleFunc("GET /api/books/{bookId}/chapter-names", s.withAdmin(s.chapterNames))
 	m.HandleFunc("POST /api/books/{bookId}/files/tags", s.withAdmin(s.queueFileJob("tags")))
 	m.HandleFunc("POST /api/books/{bookId}/files/merge", s.withAdmin(s.queueFileJob("merge")))
@@ -370,7 +375,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 
 // features are the optional extensions this server offers (docs/app-integration.md).
 func (s *server) features() []string {
-	f := []string{"collections", "playlists", "reportedSessions", "folderSessions", "oidc", "transcripts"}
+	f := []string{"collections", "playlists", "reportedSessions", "folderSessions", "pluginSearch", "oidc", "transcripts"}
 	if s.trans.available() {
 		f = append(f, "transcription")
 	}

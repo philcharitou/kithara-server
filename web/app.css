@@ -265,6 +265,12 @@ table.grid .c-prog { width: 180px; }
 
 /* cover grid */
 .cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.search-bar { flex-wrap: nowrap; }
+.search-bar input { flex: 1; min-width: 0; }
+.result-head { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: start; }
+.result-head .kv { font-size: 13px; line-height: 20px; }
+.result-text { margin-top: 14px; display: grid; gap: 10px; font-size: 13px; line-height: 20px; color: var(--on-surface-variant); }
+@media (max-width: 560px) { .result-head { grid-template-columns: 110px 1fr; } }
 .tile { display: grid; gap: 6px; align-content: start; padding: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; text-align: left; color: inherit; font: inherit; }
 .tile:hover { border-color: var(--line-strong); background: color-mix(in srgb, var(--card) 85%, var(--raised)); }
 .tile .cover.blank { font-size: 26px; }

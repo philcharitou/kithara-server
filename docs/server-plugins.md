@@ -1,6 +1,6 @@
 # Server plugins: design
 
-Status: phase 1 (plugins in Settings) built, 19 November 2026; the rest is proposed.
+Status: phases 1 and 2 (plugins in Settings, search) built, 24 November 2026; downloads and the rest are proposed.
 
 ## Goal
 
@@ -126,20 +126,22 @@ Auto-transcribe and metadata matching apply to it as to a book copied in by hand
 
 ## What the apps see
 
-A new feature in `/api/health`: `pluginSearch`. It says the server understands the
-endpoints below. It says nothing about whether any plugin is installed: the apps show the
-Search tab only when `/api/search/sources` lists at least one source.
+A new feature in `/api/health`: `pluginSearch` (built). It says the server understands the
+search endpoints below. It says nothing about whether any plugin is installed: the apps show
+the Search tab only when `/api/search/sources` lists at least one source. The downloads
+endpoints come with phase 3.
 
 ```
 GET    /api/search/sources
-→ { "sources": [ { "id": "librivox", "name": "LibriVox", "description": "…",
+→ { "sources": [ { "id": "3d17deedff18", "name": "LibriVox", "description": "…",
                    "emptyQueryTitle": "…", "canDownload": true } ] }
 
-GET    /api/search?source=librivox&q=dune&page=0
-→ { "results": [ … ], "total": 120, "hasMore": true }       (as the plugin answered)
+GET    /api/search?source=3d17deedff18&q=dune&page=0
+→ { "results": [ { "id", "title", "author", "narrator", "cover", "year" } ],
+    "total": 120, "hasMore": true }                         (total -1: the source doesn't say)
 
-GET    /api/search/{source}/results/{id}                    the preview
-GET    /api/search/{source}/cover?u=…                       covers, through the server
+GET    /api/search/{source}/results/{id}                    the preview (id path-escaped)
+GET    /api/search/{source}/cover?u=…&sig=…                 a result's cover, as given
 
 POST   /api/downloads   { "source": "librivox", "id": "…", "libraryId": "…" }
 → { "id": "d_…", "state": "QUEUED", … }
@@ -147,10 +149,26 @@ GET    /api/downloads                                       yours (an admin's: e
 DELETE /api/downloads/{id}
 ```
 
-The server passes results on as data and never as markup: text fields are plain text,
-trimmed, and limited in length; links in results are not shown to the apps except covers,
-which the server fetches and caches itself. That way a phone never contacts a plugin's
-sources directly, and a plugin reachable only on the server's own network still works.
+A source's id is the plugin's. Sources are listed by name, and only those the user may
+search whose plugin answered its last check. An empty `q` asks for what the source shows
+first, under its `emptyQueryTitle`. A source that fails answers `502` with
+"NAME didn't answer: why"; one the user may not search, `404`.
+
+The server passes results on as data and never as markup: text fields are plain text
+(tags, script and style dropped, entities decoded, one line; a preview's description keeps
+its paragraphs, separated by a blank line), trimmed, and limited in length (titles 300,
+names 200, descriptions 5,000 characters). Results without an id or a title are dropped,
+and a page holds at most 100. Links in results are not shown to the apps except covers:
+an http(s) cover becomes an address on this server, signed with a key the server keeps in
+memory, and only signed addresses are fetched (a picture, at most 5 MB, kept for a month
+in the data folder's `cache`). So a phone never contacts a plugin's sources directly, a
+signed-in user cannot make the server fetch anything else, and a plugin reachable only on
+the server's own network still works. Cover addresses stop working when the server
+restarts; search again for new ones.
+
+Each call to a plugin carries `settings` (the admin's answers over the plugin's defaults)
+and, if the admin turned it on, `user`. Search and preview calls time out after 10
+seconds, and the server makes at most 16 plugin calls at once.
 
 Progress reaches the apps the way the transcription queue does: `GET /api/downloads`
 while a download is running. The server polls each running download every few seconds,

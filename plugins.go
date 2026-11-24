@@ -89,10 +89,11 @@ type pluginBox struct {
 	path   string
 	list   []Plugin
 	client *http.Client
+	slots  chan struct{} // calls under way at once, to all plugins
 }
 
 func newPlugins(dir string) *pluginBox {
-	p := &pluginBox{path: filepath.Join(dir, "plugins.json"), client: &http.Client{
+	p := &pluginBox{path: filepath.Join(dir, "plugins.json"), slots: make(chan struct{}, 16), client: &http.Client{
 		Timeout: pluginCallTimeout,
 		// The secret goes to the address the admin gave, and nowhere else.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -154,6 +155,12 @@ var errNoPlugin = errors.New("no such plugin")
 
 // call sends one request to a plugin and decodes its JSON answer into out (when not nil).
 func (p *pluginBox) call(ctx context.Context, pl Plugin, method, path string, in, out any) error {
+	select {
+	case p.slots <- struct{}{}:
+		defer func() { <-p.slots }()
+	case <-ctx.Done():
+		return errors.New("the server is busy with other plugin calls")
+	}
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)

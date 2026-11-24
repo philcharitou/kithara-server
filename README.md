@@ -537,6 +537,10 @@ Everything the app talks is in the protocol document. Server specifics:
   as a plugin), `PATCH /api/plugins/{id}` (`url`, `secret`, `enabled`, `search` and
   `download` as everyone or admins, `sendUser`, `settings`), `POST /api/plugins/{id}/check`,
   `DELETE /api/plugins/{id}`. Secrets are never returned. See docs/server-plugins.md.
+- **Search (feature `pluginSearch`):** `GET /api/search/sources` lists what the user may
+  search; `GET /api/search?source=&q=&page=` searches one; `GET
+  /api/search/{source}/results/{id}` shows one result; covers come through the server.
+  The web page shows Search in the sidebar when there is a source.
 - **Chapter names (admin):** `GET /api/books/{id}/chapter-names` suggests names from the
   transcript (`index`, `current`, `suggested`, `generic`); save them with
   `PUT /api/books/{id}/chapters`.

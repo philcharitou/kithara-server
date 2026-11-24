@@ -12,6 +12,7 @@ const state = {
   token: null,
   me: null,
   server: null,
+  sources: [], // what the server's plugins let this user search
   libraries: [],
   books: [],
   progress: new Map(),
@@ -372,9 +373,12 @@ function browserName() {
 
 // ------------------------------------------------------------------ shell
 
+const shown = (v) => (!v.admin || isAdmin()) && (!v.when || v.when());
+
 const VIEWS = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "library", label: "Library", icon: "library" },
+  { id: "search", label: "Search", icon: "search", when: () => state.sources.length > 0 },
   { id: "lists", label: "Collections", icon: "queue" },
   { id: "stats", label: "Listening", icon: "stats" },
   { id: "devices", label: "Devices", icon: "devices" },
@@ -394,7 +398,7 @@ function renderShell(current) {
       el("span", { class: "avatar", "aria-hidden": "true" }, state.me.name.slice(0, 1)),
       el("div", { style: "min-width:0" }, el("div", { class: "strong clip" }, state.me.name), el("div", { class: "small muted" }, isAdmin() ? "Administrator" : "Listener"))),
     el("nav", { "aria-label": "Sections" },
-      VIEWS.filter((v) => !v.admin).map(navBtn),
+      VIEWS.filter((v) => !v.admin && shown(v)).map(navBtn),
       isAdmin() ? [el("div", { class: "group" }, "Administration"), VIEWS.filter((v) => v.admin).map(navBtn)] : null));
 
   const themeBtn = iconBtn(state.prefs.theme === "light" ? "dark" : "light", state.prefs.theme === "light" ? "Dark theme" : "Light theme", () => {
@@ -445,13 +449,13 @@ function go(view) {
 }
 
 async function render() {
-  const current = VIEWS.find((v) => v.id === state.view && (!v.admin || isAdmin())) || VIEWS[0];
+  const current = VIEWS.find((v) => v.id === state.view && shown(v)) || VIEWS[0];
   state.view = current.id;
   const { main, tools } = renderShell(current);
   main.append(el("p", { class: "muted" }, "Loading…"));
   try {
     const view = {
-      dashboard: viewDashboard, library: viewLibrary, lists: viewLists, stats: viewStats, devices: viewDevices, account: viewAccount,
+      dashboard: viewDashboard, library: viewLibrary, search: viewSearch, lists: viewLists, stats: viewStats, devices: viewDevices, account: viewAccount,
       libraries: viewLibraries, maintenance: viewMaintenance, activity: viewActivity, users: viewUsers, settings: viewSettings,
     }[current.id];
     main.replaceChildren(...[await view(tools)].flat().filter(Boolean));
@@ -2308,6 +2312,18 @@ async function hooksPanel() {
     form);
 }
 
+// loadSources: what this user can search, through the server's plugins.
+async function loadSources() {
+  state.sources = [];
+  if (!state.server?.features?.includes("pluginSearch")) return;
+  try { state.sources = (await api("/api/search/sources")).sources; } catch { /* no Search page */ }
+}
+
+async function pluginsChanged() {
+  await loadSources();
+  render();
+}
+
 // pluginsPanel: sources added by plugins, small web services that run beside the server
 // (docs/server-plugins.md).
 async function pluginsPanel() {
@@ -2321,7 +2337,7 @@ async function pluginsPanel() {
     try {
       const r = await api("/api/plugins", { method: "POST", body: { url: url.value.trim(), secret: secret.value } });
       toast(`Added ${r.plugin.info.name}`);
-      refreshMain(viewSettings);
+      pluginsChanged();
     } catch (e) { toast(e.message); }
     if (btn) btn.disabled = false;
   } },
@@ -2366,7 +2382,7 @@ function pluginCard({ plugin: p, hasSecret, settings, savedSecrets }) {
     try {
       const r = await api(`/api/plugins/${encodeURIComponent(p.id)}`, { method: "PATCH", body });
       toast(r.plugin.error ? "Saved, but the plugin isn't answering: " + r.plugin.error : "Plugin saved");
-      refreshMain(viewSettings);
+      pluginsChanged();
     } catch (e) { toast(e.message); }
   } },
   el("label", { class: "check wide small" }, enabled, "On"),
@@ -2389,12 +2405,12 @@ function pluginCard({ plugin: p, hasSecret, settings, savedSecrets }) {
         try {
           const r = await api(`/api/plugins/${encodeURIComponent(p.id)}/check`, { method: "POST" });
           toast(r.plugin.error ? "It isn't answering: " + r.plugin.error : "It answers");
-          refreshMain(viewSettings);
+          pluginsChanged();
         } catch (e) { toast(e.message); }
       } }, "Check"),
       iconBtn("remove", "Remove " + info.name, async () => {
         if (!confirm(`Remove ${info.name}? Its settings are forgotten.`)) return;
-        try { await api(`/api/plugins/${encodeURIComponent(p.id)}`, { method: "DELETE" }); refreshMain(viewSettings); } catch (e) { toast(e.message); }
+        try { await api(`/api/plugins/${encodeURIComponent(p.id)}`, { method: "DELETE" }); pluginsChanged(); } catch (e) { toast(e.message); }
       })),
     form);
 }
@@ -3131,10 +3147,100 @@ async function addToList(b) {
   ].flat(), { onBack: () => openBook(b.id) });
 }
 
+// ------------------------------------------------------------------ search (plugins)
+
+// finder keeps the last search while the user looks elsewhere.
+const finder = { source: "", q: "", shownQ: null, results: [], page: 0, hasMore: false, total: -1, error: "" };
+
+async function viewSearch() {
+  if (!state.sources.some((x) => x.id === finder.source)) Object.assign(finder, { source: state.sources[0].id, shownQ: null });
+  const box = el("input", { type: "search", value: finder.q, placeholder: "Title, author or narrator", "aria-label": "Search for" });
+  const pickSource = state.sources.length > 1 ? el("select", { "aria-label": "Source", style: "width:auto", onchange: (e) => {
+    Object.assign(finder, { source: e.target.value, shownQ: null });
+    refreshMain(viewSearch);
+  } }, state.sources.map((x) => el("option", { value: x.id, selected: x.id === finder.source ? true : null }, x.name))) : null;
+  const form = el("form", { class: "row search-bar", onsubmit: (ev) => {
+    ev.preventDefault();
+    finder.q = box.value.trim();
+    finder.shownQ = null;
+    refreshMain(viewSearch);
+  } }, pickSource, box, el("button", { class: "btn", type: "submit" }, icon("search"), "Search"));
+
+  const source = state.sources.find((x) => x.id === finder.source);
+  if (finder.shownQ !== finder.q) await searchPage(0);
+  const more = el("button", { class: "btn secondary", type: "button", onclick: async () => {
+    more.disabled = true;
+    await searchPage(finder.page + 1);
+    refreshMain(viewSearch);
+  } }, "More");
+  const heading = finder.q ? (finder.total >= 0 ? `${finder.total.toLocaleString()} found for “${finder.q}”` : `Found for “${finder.q}”`) : (source.emptyQueryTitle || source.name);
+  return [
+    form,
+    source.description ? el("p", { class: "small muted", style: "margin:6px 0 0" }, source.description) : null,
+    el("h2", { class: "section-title" }, heading),
+    finder.error ? el("p", { class: "err" }, finder.error) :
+      finder.results.length ? el("div", { class: "cover-grid" }, finder.results.map(resultTile)) :
+        el("p", { class: "muted" }, finder.q ? "Nothing found." : "Search for a book."),
+    finder.hasMore && !finder.error ? el("div", { class: "row", style: "justify-content:center;margin-top:16px" }, more) : null,
+  ];
+}
+
+// searchPage fetches one page of results; page 0 starts again.
+async function searchPage(page) {
+  const q = finder.q;
+  try {
+    const r = await api(`/api/search?source=${encodeURIComponent(finder.source)}&q=${encodeURIComponent(q)}&page=${page}`);
+    Object.assign(finder, { results: page ? finder.results.concat(r.results) : r.results, page, hasMore: r.hasMore, total: r.total, error: "" });
+  } catch (e) {
+    Object.assign(finder, { results: page ? finder.results : [], hasMore: false, error: e.message });
+  }
+  finder.shownQ = q;
+}
+
+function resultCover(r) {
+  const box = el("div", { class: "cover blank", "aria-hidden": "true" }, (r.title || "").slice(0, 2));
+  if (r.cover) {
+    box.dataset.src = r.cover;
+    coverObserver.observe(box);
+  }
+  return el("div", { class: "cover-box" }, box);
+}
+
+function resultTile(r) {
+  return el("button", { class: "tile", type: "button", onclick: () => openResult(finder.source, r) },
+    resultCover(r),
+    el("div", { class: "strong clip2" }, r.title),
+    el("div", { class: "small muted clip" }, r.author || "Unknown author"),
+    r.narrator || r.year ? el("div", { class: "tiny muted clip" }, [r.narrator ? "Read by " + r.narrator : null, r.year || null].filter(Boolean).join(" · ")) : null);
+}
+
+async function openResult(source, r) {
+  openSheet(r.title, [el("p", { class: "muted" }, "Loading…")], { wide: true });
+  let p;
+  try {
+    p = await api(`/api/search/${encodeURIComponent(source)}/results/${encodeURIComponent(r.id)}`);
+  } catch (e) {
+    return openSheet(r.title, [el("p", { class: "err" }, e.message)], { wide: true });
+  }
+  const facts = [
+    ["Author", p.author], ["Read by", p.narrator], ["Year", p.year],
+    ["Length", p.lengthSeconds ? fmtDuration(p.lengthSeconds * 1000) : ""],
+    ["Files", p.files ? `${p.files}${p.sizeBytes ? " · " + fmtBytes(p.sizeBytes) : ""}` : p.sizeBytes ? fmtBytes(p.sizeBytes) : ""],
+    ["Format", p.format], ["Language", p.language],
+  ].filter(([, v]) => v);
+  openSheet(p.title, [
+    el("div", { class: "result-head" },
+      resultCover(p),
+      el("div", { class: "kv" }, facts.flatMap(([k, v]) => [el("span", { class: "muted" }, k), el("span", {}, String(v))]))),
+    p.description ? el("div", { class: "result-text" }, p.description.split("\n\n").map((t) => el("p", {}, t))) : null,
+  ], { wide: true });
+}
+
 // ------------------------------------------------------------------ start
 
 async function start() {
   state.me = await api("/api/me");
+  await loadSources();
   drawPlayer();
   txWatch();
   const hash = location.hash.slice(1);

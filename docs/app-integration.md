@@ -9,7 +9,7 @@ Detect features rather than assume them. `/api/health` now lists them:
 
 ```json
 { "ok": true, "protocol": 1, "name": "Phil's shelf", "version": "0.8.1",
-  "features": ["collections", "playlists", "reportedSessions", "folderSessions", "oidc", "transcripts", "transcription"] }
+  "features": ["collections", "playlists", "reportedSessions", "folderSessions", "pluginSearch", "oidc", "transcripts", "transcription"] }
 ```
 
 Anything older has no `features`. In that case, a route that answers `404` means the
@@ -278,6 +278,30 @@ it anyway, show it only when `role == "admin"`:
 - `PUT /api/books/{id}/cover` (image body) and `PUT /api/books/{id}/chapters`.
 - `GET/POST /api/users` and `PATCH/DELETE /api/users/{name}`.
 - Libraries, uploads, scan problems, settings, backup and activity: see the README.
+
+## 10b. Search through the server's plugins (`pluginSearch`)
+
+A server can have plugins that add sources to search (docs/server-plugins.md). Show a
+Search tab only when `GET /api/search/sources` lists at least one; most servers have none.
+
+```
+GET /api/search/sources                          { "sources": [ { "id", "name", "description",
+                                                     "emptyQueryTitle", "canDownload" } ] }
+GET /api/search?source=ID&q=WORDS&page=0         { "results": [ { "id", "title", "author",
+                                                     "narrator", "cover", "year" } ],
+                                                   "total" (-1: unknown), "hasMore" }
+GET /api/search/{source}/results/{id}            the same, plus "description" (paragraphs
+                                                   split by a blank line), "lengthSeconds",
+                                                   "sizeBytes", "files", "format", "language"
+```
+
+- Show the source's `emptyQueryTitle` and its results (`q` empty) before the user types.
+- `cover` is a path on this server: fetch it with the token, like book covers. It stops
+  working when the server restarts; a new search gives new ones.
+- Everything is plain text. Name the tab and its sources only as the server names them,
+  and build nothing into the app for any particular source.
+- `502` means the source didn't answer (the message says why); show it and let the user
+  try again.
 
 ## 11. Protocol document
 
