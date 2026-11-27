@@ -12,7 +12,7 @@
 
 services:
   kithara:
-    image: ghcr.io/philcharitou/kithara-server:${KITHARA_IMAGE_TAG:-0.8}
+    image: ghcr.io/philcharitou/kithara-server:${KITHARA_IMAGE_TAG:-0.9}
     restart: unless-stopped
     environment:
       KITHARA_NAME: ${KITHARA_NAME:-Kithara}
@@ -23,6 +23,7 @@ services:
     volumes:
       - ./books:/books # library folders (Audiobooks, and any you add later beside it)
       - kithara-data:/data # accounts, progress, transcripts, settings, backups
+      - incoming:/incoming # what plugins download, before it goes into a library (share it with them)
 
   caddy:
     image: caddy:2.8
@@ -43,5 +44,6 @@ services:
 
 volumes:
   kithara-data:
+  incoming:
   caddy-data:
   caddy-config:
