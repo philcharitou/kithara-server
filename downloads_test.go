@@ -151,6 +151,9 @@ func TestPluginDownloads(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(srv.downloads.incoming, dl.ID)); err == nil {
 		t.Fatal("the incoming folder was left behind")
 	}
+	if left, _ := filepath.Glob(filepath.Join(root.path, ".kithara-incoming-*")); len(left) > 0 {
+		t.Fatalf("staging left behind: %v", left)
+	}
 	source.mu.Lock()
 	forgot, given := slices.Clone(source.forgot), source.given[0]
 	source.mu.Unlock()
@@ -188,17 +191,27 @@ func TestPluginDownloads(t *testing.T) {
 		t.Fatalf("the taker was given %v", link)
 	}
 
-	// A listener has 3 running at most, and sees only their own; cancelling tells the plugin.
-	var held []string
-	for range 3 {
-		code, h, body := start(kid, "hold", "Kids")
-		if code != 201 {
-			t.Fatalf("hold: %d %s", code, body)
-		}
-		held = append(held, h.ID)
+	// A listener has 3 running at most, even when they ask for many at once; they see only
+	// their own; cancelling tells the plugin.
+	var (
+		held  []string
+		heldM sync.Mutex
+		wg    sync.WaitGroup
+	)
+	for range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if code, h, _ := start(kid, "hold", "Kids"); code == 201 {
+				heldM.Lock()
+				held = append(held, h.ID)
+				heldM.Unlock()
+			}
+		}()
 	}
-	if code, _, _ := start(kid, "hold", "Kids"); code != 429 {
-		t.Fatalf("a fourth running download: %d", code)
+	wg.Wait()
+	if len(held) != 3 {
+		t.Fatalf("%d downloads started at once by a listener", len(held))
 	}
 	var list struct{ Downloads []Download }
 	_, b := call(t, ts, "GET", "/api/downloads", kid, nil)
@@ -223,17 +236,17 @@ func TestPluginDownloads(t *testing.T) {
 func TestCollectIncoming(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o644)
-	if _, _, err := collectIncoming(dir); err == nil || !strings.Contains(err.Error(), "no audio") {
-		t.Fatalf("no audio: %v", err)
+	if _, _, audio, err := collectIncoming(dir); err != nil || audio {
+		t.Fatalf("no audio: %v %v", audio, err)
 	}
-	if _, _, err := collectIncoming(filepath.Join(dir, "missing")); err == nil {
+	if _, _, _, err := collectIncoming(filepath.Join(dir, "missing")); err == nil {
 		t.Fatal("a missing folder was fine")
 	}
 	os.MkdirAll(filepath.Join(dir, "a", "b", "c"), 0o755)
 	os.WriteFile(filepath.Join(dir, "a", "b", "c", "deep.mp3"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(dir, "a", "b", "ok.mp3"), []byte("x"), 0o644)
-	files, skipped, err := collectIncoming(dir)
-	if err != nil || len(files) != 2 || !slices.Contains(skipped, "a/b/c/ (too deep)") {
+	files, skipped, audio, err := collectIncoming(dir)
+	if err != nil || !audio || len(files) != 2 || !slices.Contains(skipped, "a/b/c/ (too deep)") {
 		t.Fatalf("files %v, skipped %v, %v", files, skipped, err)
 	}
 	for in, want := range map[string]string{"AC/DC: Live?": "AC DC - Live", "  ..  ": "x", `a<b>"c"|d`: "a(b)'c' d"} {
@@ -246,5 +259,65 @@ func TestCollectIncoming(t *testing.T) {
 	}
 	if got := linkKind("ftp://example.org/"); got != "ftp" {
 		t.Errorf("linkKind: %q", got)
+	}
+	if got := linkKinds("https://example.org/a/b.zip"); strings.Join(got, ",") != "zip,https" {
+		t.Errorf("linkKinds: %v", got)
+	}
+}
+
+// The incoming folder may be set to somewhere that holds other things: only the server's
+// own download folders are ever tidied away.
+func TestTrimIncomingKeepsOthers(t *testing.T) {
+	_, srv, _, _ := twoLibraryServer(t)
+	in := srv.downloads.incoming
+	old := time.Now().Add(-48 * time.Hour)
+	for _, name := range []string{"d_0123456789ab", "My audiobooks", "d_notmine", "notes.txt"} {
+		p := filepath.Join(in, name)
+		if strings.HasSuffix(name, ".txt") {
+			os.MkdirAll(in, 0o755)
+			os.WriteFile(p, []byte("x"), 0o644)
+		} else {
+			os.MkdirAll(p, 0o755)
+		}
+		os.Chtimes(p, old, old)
+	}
+	srv.downloads.trimIncoming()
+	for name, want := range map[string]bool{"d_0123456789ab": false, "My audiobooks": true, "d_notmine": true, "notes.txt": true} {
+		if _, err := os.Stat(filepath.Join(in, name)); (err == nil) != want {
+			t.Errorf("%s: kept %v, want %v", name, err == nil, want)
+		}
+	}
+}
+
+// A restart while files were being moved in carries on: the book still appears once,
+// whole, from the hidden staging folder.
+func TestIntakeResumes(t *testing.T) {
+	_, srv, _, _ := twoLibraryServer(t)
+	audio, _ := os.ReadFile(sampleAudio(t))
+	root, _ := srv.lib.catalogueRoot("Kids")
+	d := srv.downloads
+	dl := Download{ID: "d_00000000000a", User: "phil", Library: "Kids", Title: "Half Moved", Author: "Someone", State: dlMoving}
+	d.mu.Lock()
+	d.list = append(d.list, dl)
+	d.mu.Unlock()
+	staging := filepath.Join(root.path, ".kithara-incoming-"+dl.ID)
+	os.MkdirAll(staging, 0o755)
+	os.WriteFile(filepath.Join(staging, "01.m4b"), audio, 0o644) // moved before the restart
+	src := filepath.Join(d.incoming, dl.ID)
+	os.MkdirAll(src, 0o755)
+	os.WriteFile(filepath.Join(src, "02.m4b"), audio, 0o644) // still to move
+	d.intake(dl.ID)
+	got, _ := d.get(dl.ID)
+	dir := filepath.Join(root.path, "Someone", "Half Moved")
+	if got.State != dlFinished || got.BookID == "" {
+		t.Fatalf("after resuming: %+v", got)
+	}
+	for _, f := range []string{"01.m4b", "02.m4b", "metadata.json"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("%s: %v", f, err)
+		}
+	}
+	if _, err := os.Stat(staging); err == nil {
+		t.Error("the staging folder was left behind")
 	}
 }

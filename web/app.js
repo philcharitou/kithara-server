@@ -3151,9 +3151,10 @@ async function addToList(b) {
 // ------------------------------------------------------------------ search (plugins)
 
 // finder keeps the last search while the user looks elsewhere.
-const finder = { source: "", q: "", shownQ: null, results: [], page: 0, hasMore: false, total: -1, error: "" };
+const finder = { source: "", q: "", shownQ: null, results: [], page: 0, hasMore: false, total: -1, error: "", seq: 0 };
 
 async function viewSearch() {
+  if (!state.sources.length) return el("p", { class: "muted" }, "There is nothing to search any more.");
   if (!state.sources.some((x) => x.id === finder.source)) Object.assign(finder, { source: state.sources[0].id, shownQ: null });
   const canDownload = state.sources.some((x) => x.canDownload);
   const [downloads] = await Promise.all([canDownload || isAdmin() ? api("/api/downloads").then((r) => r.downloads) : [], state.books.length ? null : loadLibrary()]);
@@ -3178,7 +3179,7 @@ async function viewSearch() {
   } }, "More");
   const heading = finder.q ? (finder.total >= 0 ? `${finder.total.toLocaleString()} found for “${finder.q}”` : `Found for “${finder.q}”`) : (source.emptyQueryTitle || source.name);
   return [
-    downloadsPanel(downloads),
+    downloadsPanel(downloads) || el("div", { id: "downloads-panel" }),
     form,
     source.description ? el("p", { class: "small muted", style: "margin:6px 0 0" }, source.description) : null,
     el("h2", { class: "section-title" }, heading),
@@ -3189,16 +3190,20 @@ async function viewSearch() {
   ];
 }
 
-// searchPage fetches one page of results; page 0 starts again.
+// searchPage fetches one page of results; page 0 starts again. An answer that comes after
+// a newer search was asked for is dropped.
 async function searchPage(page) {
-  const q = finder.q;
+  const { q, source } = finder;
+  const seq = ++finder.seq;
+  let next;
   try {
-    const r = await api(`/api/search?source=${encodeURIComponent(finder.source)}&q=${encodeURIComponent(q)}&page=${page}`);
-    Object.assign(finder, { results: page ? finder.results.concat(r.results) : r.results, page, hasMore: r.hasMore, total: r.total, error: "" });
+    const r = await api(`/api/search?source=${encodeURIComponent(source)}&q=${encodeURIComponent(q)}&page=${page}`);
+    next = { results: page ? finder.results.concat(r.results) : r.results, page, hasMore: r.hasMore, total: r.total, error: "" };
   } catch (e) {
-    Object.assign(finder, { results: page ? finder.results : [], hasMore: false, error: e.message });
+    next = { results: page ? finder.results : [], hasMore: false, error: e.message };
   }
-  finder.shownQ = q;
+  if (seq !== finder.seq || q !== finder.q || source !== finder.source) return;
+  Object.assign(finder, next, { shownQ: q });
 }
 
 function resultCover(r) {
@@ -3252,7 +3257,7 @@ function addToLibrary(source, p) {
       await api("/api/downloads", { method: "POST", body: { source, id: p.id, library: pickLib.value } });
       dialog.close();
       toast(`Bringing ${p.title} into ${pickLib.value}`);
-      if (state.view === "search") refreshMain(viewSearch);
+      refreshDownloads();
     } catch (e) { toast(e.message); go.disabled = false; }
   } }, icon("download"), "Add to library");
   return el("div", { class: "row", style: "margin-top:14px" }, libs.length > 1 ? pickLib : null, go,
@@ -3261,17 +3266,32 @@ function addToLibrary(source, p) {
 
 const DL_STATE = { QUEUED: "Waiting", DOWNLOADING: "Downloading", PAUSED: "Paused", MOVING: "Moving into the library", FINISHED: "In the library", FAILED: "Failed" };
 
+// refreshDownloads draws the downloads again in place, so what is typed in the search box
+// and the results stay as they are.
+async function refreshDownloads() {
+  clearTimeout(finder.timer);
+  if (state.view !== "search" || !state.token) return;
+  let list;
+  try {
+    list = (await api("/api/downloads")).downloads;
+  } catch {
+    finder.timer = setTimeout(refreshDownloads, 3000);
+    return;
+  }
+  if (state.view !== "search") return;
+  const next = downloadsPanel(list) || el("div", { id: "downloads-panel" });
+  const old = document.getElementById("downloads-panel");
+  if (old) old.replaceWith(next);
+  else document.getElementById("main")?.prepend(next);
+}
+
 // downloadsPanel: the books being brought in, and the last ones; it looks again every
 // few seconds while one is running and the Search page is open.
 function downloadsPanel(list) {
   clearTimeout(finder.timer);
   if (!list.length) return null;
   const running = list.some((d) => ["QUEUED", "DOWNLOADING", "PAUSED", "MOVING"].includes(d.state));
-  if (running) finder.timer = setTimeout(() => {
-    if (state.view !== "search" || !state.me) return;
-    if (dialog.open) downloadsPanel(list); // look again once the sheet is closed
-    else refreshMain(viewSearch);
-  }, 3000);
+  if (running) finder.timer = setTimeout(refreshDownloads, 3000);
   const line = (d) => {
     const busy = d.state === "DOWNLOADING" || d.state === "QUEUED" || d.state === "PAUSED";
     const detail = d.state === "FAILED" ? el("span", { class: "err" }, d.error || "Failed")
@@ -3290,10 +3310,10 @@ function downloadsPanel(list) {
       open,
       iconBtn(busy ? "close" : "remove", busy ? "Stop" : "Take off the list", async () => {
         if (busy && !confirm(`Stop bringing in ${d.title}?`)) return;
-        try { await api(`/api/downloads/${encodeURIComponent(d.id)}`, { method: "DELETE" }); refreshMain(viewSearch); } catch (e) { toast(e.message); }
+        try { await api(`/api/downloads/${encodeURIComponent(d.id)}`, { method: "DELETE" }); refreshDownloads(); } catch (e) { toast(e.message); }
       }));
   };
-  return el("section", { class: "widget", style: "margin-bottom:16px" },
+  return el("section", { class: "widget", id: "downloads-panel", style: "margin-bottom:16px" },
     el("div", { class: "w-head" }, el("h2", {}, "Brought in")),
     el("div", { class: "lines", style: "padding:4px 14px 8px" }, list.slice(0, 8).map(line)));
 }

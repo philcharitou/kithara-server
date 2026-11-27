@@ -59,7 +59,9 @@ def fetch(dl_id, folder, book):
         status["state"] = "DOWNLOADING"
         files = book["files"]
         for i, url in enumerate(files):
-            name = os.path.basename(urllib.parse.urlparse(url).path) or "part%d" % (i + 1)
+            name = os.path.basename(urllib.parse.unquote(urllib.parse.urlparse(url).path))
+            if name in ("", ".", "..") or name.startswith("."):
+                name = "part%d%s" % (i + 1, os.path.splitext(name)[1])
             dest = os.path.join(folder, name)
             req = urllib.request.Request(url, headers={"User-Agent": "kithara-plugin-catalogue"})
             with urllib.request.urlopen(req, timeout=30) as src, open(dest + ".part", "wb") as out:
@@ -83,7 +85,7 @@ class Plugin(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def authorised(self):
-        if hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + SECRET):
+        if hmac.compare_digest(self.headers.get("Authorization", "").encode(), ("Bearer " + SECRET).encode()):
             return True
         self.reply(401, {"error": "wrong secret"})
         return False

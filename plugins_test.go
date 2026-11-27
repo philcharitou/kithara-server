@@ -97,6 +97,9 @@ func TestPlugins(t *testing.T) {
 	if res, _ := call(t, ts, "PATCH", "/api/plugins/"+pl.ID, admin, map[string]any{"settings": map[string]string{"language": "de"}}); res.StatusCode != 400 {
 		t.Fatalf("a choice outside the choices was kept: %d", res.StatusCode)
 	}
+	if _, err := checkSettings(&PluginInfo{Settings: []PluginSetting{{ID: "n", Title: "N", Type: "number"}}}, nil, map[string]string{"n": "lots"}); err == nil {
+		t.Fatal("a number setting kept words")
+	}
 	res, body = call(t, ts, "PATCH", "/api/plugins/"+pl.ID, admin, map[string]any{"search": allowAdmins,
 		"settings": map[string]string{"language": "fr", "apiKey": "k-123", "other": "dropped"}})
 	if res.StatusCode != 200 || strings.Contains(string(body), "k-123") {

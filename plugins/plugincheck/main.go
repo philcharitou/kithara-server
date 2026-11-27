@@ -394,6 +394,10 @@ func checkFiles(dir string) {
 		switch {
 		case strings.HasPrefix(e.Name(), "."):
 			warn("%s is hidden; the server leaves it out", rel)
+			if e.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		case e.Type()&fs.ModeSymlink != 0:
 			bad("%s is a link; the server leaves it out", rel)
 			left++

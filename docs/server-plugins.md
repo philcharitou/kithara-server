@@ -129,7 +129,8 @@ which is the download's id), writable by anyone, so a plugin running as another 
 fill it. Folders inside it should be writable by the server too (run the plugin as user
 1000, or with umask 000), or the server copies instead of moving and can't tidy up.
 
-When the plugin reports `FINISHED`, the server:
+When the plugin reports `FINISHED`, the server (removing nothing in the incoming folder
+but the `d_…` folders it made itself):
 1. Checks the files: audio, pictures, `.cue`, `.nfo`, `.opf`, `.txt` and `.json` (the files
    the scanner reads), at most two folders deep, 50 GB in all. Links, hidden files and
    anything else are left out and listed on the download (`skipped`). No audio at all
@@ -138,7 +139,10 @@ When the plugin reports `FINISHED`, the server:
    for any file system; `Title (2)` when that is taken). Unless the download brought a
    `metadata.json` or an `.opf` of its own, it writes one with the result's title, author,
    narrator, year, language and description, so the book is named as the user saw it
-   whatever the files' tags say.
+   whatever the files' tags say. The files gather first in a hidden folder in the
+   library (`.kithara-incoming-<id>`, which scans skip), which then becomes the book's
+   folder in one rename: no scan sees half a book, and a server restarted in the middle
+   carries on.
 3. Rescans, notes the new book's id on the download (`bookId`), tells the plugin to forget
    it (`DELETE`), and removes the incoming folder.
 4. Sends the `download.finished` webhook, or `download.failed` with the reason.
@@ -189,8 +193,12 @@ an http(s) cover becomes an address on this server, signed with a key the server
 memory, and only signed addresses are fetched (a picture, at most 5 MB, kept for a month
 in the data folder's `cache`). So a phone never contacts a plugin's sources directly, a
 signed-in user cannot make the server fetch anything else, and a plugin reachable only on
-the server's own network still works. Cover addresses stop working when the server
-restarts; search again for new ones.
+the server's own network still works. A cover's address must not lead to the server's
+machine or the local network (loopback, private, link-local or Tailscale addresses),
+except to the plugin's own address: a source's results can't make the server knock on a
+router or a cloud's metadata service. The check is on the address actually connected to,
+redirects included. Cover addresses stop working when the server restarts; search again
+for new ones.
 
 Each call to a plugin carries `settings` (the admin's answers over the plugin's defaults)
 and, if the admin turned it on, `user`. Search and preview calls time out after 10

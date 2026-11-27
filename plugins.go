@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -324,12 +325,19 @@ func checkSettings(info *PluginInfo, saved, in map[string]string) (map[string]st
 			return nil, fmt.Errorf("%s is one of the choices given", f.Title)
 		case f.Type == "toggle" && v != "" && v != "true" && v != "false":
 			return nil, fmt.Errorf("%s is true or false", f.Title)
+		case f.Type == "number" && v != "" && !isNumber(v):
+			return nil, fmt.Errorf("%s is a number", f.Title)
 		}
 		if v != "" {
 			out[f.ID] = v
 		}
 	}
 	return out, nil
+}
+
+func isNumber(s string) bool {
+	_, err := strconv.ParseFloat(s, 64)
+	return err == nil
 }
 
 func checkPluginURL(raw string) (string, error) {

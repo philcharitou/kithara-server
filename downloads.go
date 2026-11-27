@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -44,6 +45,10 @@ const (
 
 // downloadPoll is how often running downloads are asked about (shorter in tests).
 var downloadPoll = 3 * time.Second
+
+// downloadIDRe is the name of a folder the server made in the incoming folder; nothing
+// else there is ever removed.
+var downloadIDRe = regexp.MustCompile(`^d_[0-9a-f]{12}$`)
 
 type Download struct {
 	ID       string `json:"id"`
@@ -86,11 +91,12 @@ type downloads struct {
 	incoming string
 	wake     chan struct{}
 	moving   map[string]bool
-	intakeMu sync.Mutex // one move into a library, and its rescan, at a time
+	starting map[string]int // per user: downloads being started (the plugin is being asked)
+	intakeMu sync.Mutex     // one move into a library, and its rescan, at a time
 }
 
 func newDownloads(s *server) *downloads {
-	d := &downloads{s: s, path: filepath.Join(s.store.dir, "downloads.json"), wake: make(chan struct{}, 1), moving: map[string]bool{},
+	d := &downloads{s: s, path: filepath.Join(s.store.dir, "downloads.json"), wake: make(chan struct{}, 1), moving: map[string]bool{}, starting: map[string]int{},
 		incoming: envOr("KITHARA_INCOMING", filepath.Join(s.store.dir, "incoming"))}
 	if err := readJSON(d.path, &d.list); err != nil {
 		log.Printf("downloads.json: %v", err)
@@ -251,34 +257,57 @@ func (d *downloads) intake(id string) {
 	if !ok || dl.State != dlMoving {
 		return
 	}
-	src := filepath.Join(d.incoming, dl.ID)
-	files, skipped, err := collectIncoming(src)
-	if err != nil {
-		d.fail(id, err.Error())
-		return
-	}
 	root, ok := d.s.lib.catalogueRoot(dl.Library)
 	if !ok {
 		d.fail(id, "the library "+dl.Library+" is gone")
 		return
+	}
+	// The files gather in a hidden folder in the library (the scanner skips those, and it
+	// is on the same disk), which becomes the book's folder in one rename: a scan never
+	// sees half a book. A restart in the middle carries on where it was.
+	src, staging := filepath.Join(d.incoming, dl.ID), filepath.Join(root.path, ".kithara-incoming-"+dl.ID)
+	_, err := os.Stat(staging)
+	resumed := err == nil
+	files, skipped, audio, err := collectIncoming(src)
+	switch {
+	case errors.Is(err, fs.ErrNotExist) && resumed:
+		err = nil // all of it was moved before the restart
+	case errors.Is(err, fs.ErrNotExist):
+		err = errors.New("the plugin left no files")
+	case err == nil && !audio && !resumed:
+		err = errors.New("the download holds no audio files")
+	}
+	if err != nil {
+		d.fail(id, err.Error())
+		return
+	}
+	undo := func(why string) {
+		os.RemoveAll(staging)
+		d.fail(id, why)
+	}
+	for _, rel := range files {
+		if err := moveFile(filepath.Join(src, rel), filepath.Join(staging, rel)); err != nil {
+			undo("moving the files into the library: " + err.Error())
+			return
+		}
+	}
+	if !hasMetadataFile(staging) {
+		if err := writeJSON(filepath.Join(staging, "metadata.json"), dl.metadata()); err != nil {
+			log.Printf("download %s: metadata.json: %v", id, err)
+		}
 	}
 	dest := filepath.Join(root.path, folderName(dl.Title, "Untitled"))
 	if dl.Author != "" {
 		dest = filepath.Join(root.path, folderName(dl.Author, "Unknown author"), folderName(dl.Title, "Untitled"))
 	}
 	dest = freeName(dest)
-	for _, rel := range files {
-		if err := moveFile(filepath.Join(src, rel), filepath.Join(dest, rel)); err != nil {
-			d.fail(id, "moving the files into the library: "+err.Error())
-			return
-		}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		undo("making the author's folder: " + err.Error())
+		return
 	}
-	if !slices.ContainsFunc(files, func(f string) bool {
-		return !strings.ContainsRune(f, filepath.Separator) && (strings.EqualFold(f, "metadata.json") || strings.EqualFold(filepath.Ext(f), ".opf"))
-	}) {
-		if err := writeJSON(filepath.Join(dest, "metadata.json"), dl.metadata()); err != nil {
-			log.Printf("download %s: metadata.json: %v", id, err)
-		}
+	if err := os.Rename(staging, dest); err != nil {
+		undo("naming the book's folder: " + err.Error())
+		return
 	}
 	if err := d.s.lib.rescan(); err != nil {
 		log.Printf("rescan after download %s: %v", id, err)
@@ -291,6 +320,15 @@ func (d *downloads) intake(id string) {
 	dl, _ = d.change(id, func(x *Download) { x.State, x.BookID, x.Skipped, x.Error = dlFinished, bookID, skipped, "" })
 	d.s.notify(eventDownloadDone, fmt.Sprintf("%s is in %s", dl.Title, dl.Library),
 		map[string]any{"downloadId": dl.ID, "bookId": bookID, "title": dl.Title, "library": dl.Library, "user": dl.User, "skipped": skipped})
+}
+
+// hasMetadataFile says whether a book's folder brings its own details: a metadata.json
+// or an .opf beside the audio.
+func hasMetadataFile(dir string) bool {
+	entries, _ := os.ReadDir(dir)
+	return slices.ContainsFunc(entries, func(e os.DirEntry) bool {
+		return e.Type().IsRegular() && (strings.EqualFold(e.Name(), "metadata.json") || strings.EqualFold(filepath.Ext(e.Name()), ".opf"))
+	})
 }
 
 // metadata is the result's details in audiobookshelf's metadata.json, which the scanner
@@ -320,10 +358,10 @@ func (dl Download) metadata() map[string]any {
 var incomingKeep = map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".cue": true, ".nfo": true, ".opf": true, ".txt": true, ".json": true}
 
 // collectIncoming lists the files of a download that may go into a library, as paths
-// under dir, and those it leaves out. Links, hidden files and anything unusual stay out.
-func collectIncoming(dir string) (files, skipped []string, err error) {
+// under dir, and those it leaves out, and says whether any is audio. Links, hidden files
+// and anything unusual stay out.
+func collectIncoming(dir string) (files, skipped []string, audio bool, err error) {
 	var total int64
-	audio := false
 	err = filepath.WalkDir(dir, func(path string, e fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -369,13 +407,7 @@ func collectIncoming(dir string) (files, skipped []string, err error) {
 		files = append(files, filepath.FromSlash(rel))
 		return nil
 	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, errors.New("the plugin left no files")
-	}
-	if err == nil && !audio {
-		err = errors.New("the download holds no audio files")
-	}
-	return files, skipped, err
+	return files, skipped, audio, err
 }
 
 var badNameChars = strings.NewReplacer("/", " ", `\`, " ", ":", " -", "*", " ", "?", "", `"`, "'", "<", "(", ">", ")", "|", " ")
@@ -447,6 +479,9 @@ func (l *library) bookInDir(library, dir string) string {
 func (d *downloads) trimIncoming() {
 	entries, _ := os.ReadDir(d.incoming)
 	for _, e := range entries {
+		if !e.IsDir() || !downloadIDRe.MatchString(e.Name()) {
+			continue
+		}
 		dl, ok := d.get(e.Name())
 		if ok && (dl.active() || dl.State == dlMoving) {
 			continue
@@ -484,17 +519,26 @@ func (s *server) startDownload(w http.ResponseWriter, r *http.Request, user, tok
 	}
 	d := s.downloads
 	d.mu.Lock()
-	running := 0
+	running := d.starting[user]
 	for _, x := range d.list {
 		if x.User == user && (x.active() || x.State == dlMoving) {
 			running++
 		}
 	}
-	d.mu.Unlock()
 	if !a.admin() && running >= maxListenerActive {
+		d.mu.Unlock()
 		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("%d downloads at once at most; wait for one to finish", maxListenerActive))
 		return
 	}
+	d.starting[user]++ // until it is on the list, or refused
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		if d.starting[user]--; d.starting[user] <= 0 {
+			delete(d.starting, user)
+		}
+		d.mu.Unlock()
+	}()
 
 	ctx, cancel := context.WithTimeout(r.Context(), pluginCallTimeout)
 	defer cancel()
@@ -576,25 +620,40 @@ func (s *server) startDownload(w http.ResponseWriter, r *http.Request, user, tok
 	writeJSONResponse(w, http.StatusCreated, dl)
 }
 
-// linkKind is the part of a link before ":", or else its file extension, lower-cased.
-func linkKind(link string) string {
+// linkKinds are the kinds a link may be taken as, most particular first: its file
+// extension ("zip"), then the part before ":" ("https"), lower-cased.
+func linkKinds(link string) []string {
+	var kinds []string
+	path, scheme := link, ""
 	if u, err := url.Parse(link); err == nil {
-		if ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(u.Path)), "."); (u.Scheme == "http" || u.Scheme == "https") && ext != "" {
-			return ext
-		}
-		if u.Scheme != "" {
-			return strings.ToLower(u.Scheme)
-		}
+		path, scheme = u.Path, strings.ToLower(u.Scheme)
 	}
-	return strings.TrimPrefix(strings.ToLower(filepath.Ext(link)), ".")
+	if ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), "."); ext != "" && linkKindRe.MatchString(ext) {
+		kinds = append(kinds, ext)
+	}
+	if scheme != "" {
+		kinds = append(kinds, scheme)
+	}
+	return kinds
 }
 
-// taker is a plugin this account may download from that takes the link's kind.
+// linkKind names a link's kind for a message.
+func linkKind(link string) string {
+	if kinds := linkKinds(link); len(kinds) > 0 {
+		return kinds[0]
+	}
+	return "unknown"
+}
+
+// taker is a plugin this account may download from that takes the link, by its most
+// particular kind.
 func (p *pluginBox) taker(a Account, link string) (Plugin, bool) {
-	kind := linkKind(link)
-	for _, pl := range p.snapshot() {
-		if pl.Enabled && pl.mayDownload(a) && slices.Contains(pl.Info.Accepts, kind) {
-			return pl, true
+	list := p.snapshot()
+	for _, kind := range linkKinds(link) {
+		for _, pl := range list {
+			if pl.Enabled && pl.mayDownload(a) && slices.Contains(pl.Info.Accepts, kind) {
+				return pl, true
+			}
 		}
 	}
 	return Plugin{}, false

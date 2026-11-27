@@ -63,7 +63,9 @@ A plugin may offer only search (no `downloads`), or only downloads (`accepts`, b
 
 - `id` is yours, up to 300 characters, and comes back in `preview` and `download`.
 - `cover` is an `http(s)` address the **server** can fetch; the server fetches it, keeps
-  it a month, and gives the apps its own address. A cover on your local network is fine.
+  it a month, and gives the apps its own address. A cover may be on the internet or at
+  the plugin's own address (a plugin may serve its own covers), but not elsewhere on the
+  server's machine or local network: those are refused.
 - `total` may be left out when you don't know it. At most 100 results a page.
 - Answer within 10 seconds, or the server gives up and says so.
 

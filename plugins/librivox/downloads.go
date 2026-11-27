@@ -122,7 +122,7 @@ func (d *downloader) fetch(ctx context.Context, j *job) error {
 	}
 	j.size.Store(size)
 	for _, f := range files {
-		if err := d.file(ctx, j, f, filepath.Base(f.Name)); err != nil {
+		if err := d.file(ctx, j, f, flatName(f.Name)); err != nil {
 			return err
 		}
 	}
@@ -134,9 +134,15 @@ func (d *downloader) fetch(ctx context.Context, j *job) error {
 	return nil
 }
 
+// flatName is an Archive file name for one folder: "disc 1/01.mp3" becomes
+// "disc 1 - 01.mp3", so files of the same name in different folders don't collide.
+func flatName(name string) string {
+	return strings.Trim(strings.ReplaceAll(strings.ReplaceAll(name, `\`, "/"), "/", " - "), " -.")
+}
+
 // file downloads one file into the job's folder, as name, trying again after a failure.
 func (d *downloader) file(ctx context.Context, j *job, f file, name string) error {
-	if name == "." || name == "/" || strings.ContainsAny(name, `/\`) {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("an odd file name: %q", f.Name)
 	}
 	var err error

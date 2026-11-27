@@ -239,6 +239,14 @@ func TestDescriptions(t *testing.T) {
 	}
 }
 
+func TestFlatName(t *testing.T) {
+	for in, want := range map[string]string{"01.mp3": "01.mp3", "disc 1/01.mp3": "disc 1 - 01.mp3", "../x.mp3": "x.mp3", "/": ""} {
+		if got := flatName(in); got != want {
+			t.Errorf("flatName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestRuntime(t *testing.T) {
 	for in, want := range map[string]float64{"8:14:41": 29681, "36:33": 2193, "630.38": 630.38, "": 0, "soon": 0} {
 		if got := runtime(in); got != want {

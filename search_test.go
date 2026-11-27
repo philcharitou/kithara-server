@@ -128,6 +128,11 @@ func TestPluginSearch(t *testing.T) {
 	if fake.coverHits != 1 {
 		t.Fatalf("the cover was fetched %d times", fake.coverHits)
 	}
+	// A cover on the local network, other than at the plugin's own address, is refused.
+	inwardCover := srv.coverLink(id, "http://10.0.0.1/router.png")
+	if res, body := call(t, ts, "GET", inwardCover, kid, nil); res.StatusCode != 502 || !strings.Contains(string(body), "local network") {
+		t.Fatalf("a cover on the local network: %d %s", res.StatusCode, body)
+	}
 	forged := "/api/search/" + id + "/cover?" + url.Values{"u": {"http://127.0.0.1:1/secret"}, "sig": {"00"}}.Encode()
 	if res, _ := call(t, ts, "GET", forged, kid, nil); res.StatusCode != 404 {
 		t.Fatalf("a forged cover address was fetched: %d", res.StatusCode)

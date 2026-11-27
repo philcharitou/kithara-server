@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -167,24 +169,57 @@ func (s *server) coverLink(source, raw string) string {
 
 func (s *server) coverCacheDir() string { return filepath.Join(s.store.dir, "cache", "plugin-covers") }
 
-var coverClient = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, via []*http.Request) error {
-	if len(via) >= 3 {
-		return errors.New("too many redirects")
+// coverClient fetches covers for a plugin at pluginURL. A cover may come from the
+// internet, or from the plugin's own address (a plugin may serve its own covers), but not
+// from anywhere else on this machine or the local network: a source's results must not be
+// able to make the server knock on a router or a cloud's metadata address. The check is on
+// the address actually dialled, so redirects and names that resolve inward are caught.
+func coverClient(ctx context.Context, pluginURL string) *http.Client {
+	allowed := map[string]bool{}
+	if u, err := url.Parse(pluginURL); err == nil {
+		if ips, err := net.DefaultResolver.LookupIPAddr(ctx, u.Hostname()); err == nil {
+			for _, ip := range ips {
+				allowed[ip.IP.String()] = true
+			}
+		}
 	}
-	return nil
-}}
+	dialer := &net.Dialer{Timeout: 10 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+		host, _, _ := net.SplitHostPort(address)
+		if ip := net.ParseIP(host); ip != nil && inward(ip) && !allowed[ip.String()] {
+			return errors.New("it points at this machine or the local network")
+		}
+		return nil
+	}}
+	return &http.Client{Timeout: 15 * time.Second,
+		Transport: &http.Transport{DialContext: dialer.DialContext, Proxy: nil, TLSHandshakeTimeout: 10 * time.Second},
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= 3 {
+				return errors.New("too many redirects")
+			}
+			return nil
+		}}
+}
+
+var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// inward is an address on this machine or a private network (Tailscale's included).
+func inward(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || cgnat.Contains(ip)
+}
 
 // searchCover serves a result's cover, fetched once and kept for a month.
 func (s *server) searchCover(w http.ResponseWriter, r *http.Request, user, token string) {
 	source, raw := r.PathValue("source"), r.URL.Query().Get("u")
-	if _, ok := s.searchable(s.acct(user), source); !ok || !hmac.Equal([]byte(r.URL.Query().Get("sig")), []byte(s.coverSig(source, raw))) {
+	pl, ok := s.searchable(s.acct(user), source)
+	if !ok || !hmac.Equal([]byte(r.URL.Query().Get("sig")), []byte(s.coverSig(source, raw))) {
 		writeError(w, http.StatusNotFound, "no such cover")
 		return
 	}
 	sum := sha256.Sum256([]byte(source + "\x00" + raw))
 	path := filepath.Join(s.coverCacheDir(), hex.EncodeToString(sum[:16]))
 	if fi, err := os.Stat(path); err != nil || time.Since(fi.ModTime()) > coverCacheDays*24*time.Hour {
-		if err := fetchCover(r.Context(), raw, path); err != nil {
+		if err := fetchCover(r.Context(), pl.URL, raw, path); err != nil {
 			writeError(w, http.StatusBadGateway, "the cover could not be fetched: "+err.Error())
 			return
 		}
@@ -204,7 +239,7 @@ func (s *server) searchCover(w http.ResponseWriter, r *http.Request, user, token
 	http.ServeContent(w, r, "", time.Time{}, f)
 }
 
-func fetchCover(ctx context.Context, raw, path string) error {
+func fetchCover(ctx context.Context, pluginURL, raw, path string) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
@@ -212,7 +247,7 @@ func fetchCover(ctx context.Context, raw, path string) error {
 		return err
 	}
 	req.Header.Set("User-Agent", "kithara-server/"+serverVersion)
-	res, err := coverClient.Do(req)
+	res, err := coverClient(ctx, pluginURL).Do(req)
 	if err != nil {
 		return err
 	}
@@ -233,11 +268,21 @@ func fetchCover(ctx context.Context, raw, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".cover-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = tmp.Write(data)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+	}
+	return err
 }
 
 // trimCoverCache lets covers nobody has looked at for a month go.
