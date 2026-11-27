@@ -1,6 +1,6 @@
 # Server plugins: design
 
-Status: phases 1 to 3 (plugins in Settings, search, downloads) built, 24 November 2026; the reference plugin and the apps are proposed.
+Status: phases 1 to 4 (plugins in Settings, search, downloads, the example plugins and the guide) built, 27 November 2026; the apps are proposed. How to write one: [writing-a-server-plugin.md](writing-a-server-plugin.md).
 
 ## Goal
 
@@ -9,8 +9,10 @@ from the apps, and whose books can be brought into a library on the server. The 
 never runs plugin code. It asks its server for results and shows them in its own screens,
 so the same feature works on iPhone, Android and the web page alike.
 
-Kithara itself ships no plugins in the server image, and the apps know of none. A
-reference plugin for public-domain audiobooks shows how one is written (see Phases).
+Kithara itself ships no plugins in the server image, and the apps know of none. Two
+example plugins in `plugins/` show how one is written: LibriVox's public-domain
+audiobooks (with its own image, `kithara-plugin-librivox`), and a one-file Python plugin
+for a list of files.
 Anyone can write a plugin for their own server; what a server's owner installs there is
 their business, as with any software they run on their own machine.
 
@@ -267,14 +269,16 @@ The apps' part is generic, and stays so:
    interface, which proves the API before the apps use it.
 3. **Downloads:** the incoming folder, `downloads.json`, polling, the checks and the move
    into a library, rescans, the webhooks, the downloads list on the web page, hand-offs.
-4. **Reference plugin:** a public-domain audiobook source in its own small repository,
-   with a Compose snippet, as the example for anyone writing one. Also a
-   `docs/writing-a-server-plugin.md` with the contract above and a test harness.
+4. **Example plugins** (built): `plugins/librivox`, LibriVox through the Internet Archive,
+   in Go, with an image released beside the server's; `plugins/catalogue-python`, the
+   smallest complete plugin; `plugins/plugincheck`, which calls a plugin as the server does
+   and says what is wrong; and `docs/writing-a-server-plugin.md`. They live in this
+   repository (each its own module) rather than in repositories of their own, so they
+   change with the contract.
 5. **The apps:** the Search tab on iPhone and Android drawn from the server, beside the
    Android plugins' sources.
 
-Phases 1 to 3 are the server, and are built; each leaves a working state. Phase 4 is about
-a session.
+Phases 1 to 4 are built; each leaves a working state.
 
 ## Open questions
 

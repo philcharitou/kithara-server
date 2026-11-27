@@ -1,0 +1,20 @@
+[
+  {
+    "id": "gift-of-the-magi",
+    "title": "The Gift of the Magi",
+    "author": "O. Henry",
+    "narrator": "Betsie Bush",
+    "cover": "https://archive.org/services/img/giftofmagi",
+    "description": "A young couple, very much in love and with very little money, each make a sacrifice to buy the other a Christmas present. A LibriVox recording, in the public domain.",
+    "files": ["https://archive.org/download/giftofmagi/giftofmagi_librivox.m4b"]
+  },
+  {
+    "id": "the-raven",
+    "title": "The Raven",
+    "author": "Edgar Allan Poe",
+    "narrator": "Chris Goringe",
+    "cover": "https://archive.org/services/img/raven",
+    "description": "Poe's poem of a grieving man and a talking raven. A LibriVox recording, in the public domain.",
+    "files": ["https://archive.org/download/raven/raven_poe_64kb.mp3"]
+  }
+]

@@ -552,7 +552,10 @@ Everything the app talks is in the protocol document. Server specifics:
 - **Files (admin):** `POST /api/books/{id}/files/tags`, `POST /api/books/{id}/files/merge`
   (`deleteOriginals`), `GET /api/files/jobs`, `DELETE /api/files/jobs/{id}` (a waiting one).
 - How the apps can use all of this: [docs/app-integration.md](docs/app-integration.md).
-- Plugins that add searchable sources (planned): [docs/server-plugins.md](docs/server-plugins.md).
+- Plugins that add searchable sources: [docs/server-plugins.md](docs/server-plugins.md) (the
+  design), [docs/writing-a-server-plugin.md](docs/writing-a-server-plugin.md) (how to write
+  one), and the examples in [plugins/](plugins): LibriVox's public-domain audiobooks
+  (`ghcr.io/philcharitou/kithara-plugin-librivox`), a one-file Python plugin, and a checker.
 - **Metadata (admin):** `GET /api/books/{bookId}/match?provider=audible|openlibrary|google`
   searches by the book's own title and author, or by `title`, `author`, `asin` (Audible)
   and `region` (Audible: us, uk, ca, au, de, fr, it, es, in, jp). Each result is a set of
